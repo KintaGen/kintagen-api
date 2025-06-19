@@ -115,7 +115,7 @@ async function getLLMResponse({system = 'You are "Project Kintagen," a highly in
 async function researcher(topic){
     console.log(`Starting research on topic: "${topic}"`);
 
-    const searchQueries = await generateSearchQueries(topic, 3);
+    const searchQueries = await generateSearchQueries(topic, 10);
     console.log("Generated search queries:", searchQueries);
 
     const searchResults = await getSearchResults(searchQueries);
@@ -180,7 +180,7 @@ app.post('/api/chat', async (req, res) => {
             messages: fullMessages,
         });
         */
-        const result = await researcher(`Solve: ${contentMessages[contentMessages.length - 1].content}. Current context: ${filecoinContext}. Use the current context as your knowlodge base`);
+        const result = await researcher(`Solve: ${contentMessages[contentMessages.length - 1].content}`);
         // Send the AI's reply back to the frontend
         res.json({ reply: result });
 
