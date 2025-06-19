@@ -432,7 +432,58 @@ app.post('/api/analyze-ld50', async (req, res) => {
     }
 });
 
+app.post('/api/analyze-gcms', async (req, res) => {
+    console.log('Received request to /api/analyze-gcms');
 
+    // 1. Get paths from the request body. If they don't exist, they will be null,
+    // which the R script is designed to handle (it will use sample data).
+    const { dataPath, phenoFile } = req.body;
+
+    // 2. Define the path to the R script.
+    const r_script_path = path.join(__dirname, 'scripts', 'xcms_analysis.R');
+    
+    // 3. Define the command and arguments for the script.
+    // We pass null or undefined paths directly; R will see them as empty arguments.
+    const command = 'Rscript';
+    const args = [
+        r_script_path,
+        dataPath,    // a full path to the directory with .CDF files
+        phenoFile    // a full path to the metadata .csv file
+    ];
+    // No specific working directory needed for this script if paths are absolute.
+
+    try {
+        // 4. Execute the script using the helper function.
+        console.log('Starting GC-MS R script execution...');
+        const scriptOutputJson = await runScript(command, args);
+
+        // 5. If the script succeeds, parse the JSON output and send it back.
+        // The R script is designed to always output a single JSON string.
+        const results = JSON.parse(scriptOutputJson);
+        
+        // Check the status from within the R script's own JSON response
+        if (results.status === 'success') {
+            res.json(results);
+        } else {
+            // If the R script caught an internal error, it will report it here.
+            // This provides more detailed error info than a simple exit code.
+            console.error('R script reported an internal error:', results.error);
+            res.status(500).json(results);
+        }
+
+    } catch (error) {
+        // 6. If the script fails at the process level (e.g., R not found, script crashes hard),
+        // send a detailed error response.
+        console.error('--- GC-MS R SCRIPT EXECUTION FAILED ---');
+        console.error(error);
+        console.error('-------------------------------------');
+        res.status(500).json({
+            status: 'error',
+            message: 'A critical error occurred while running the R script.',
+            error: error.message,
+        });
+    }
+});
 
 
 
