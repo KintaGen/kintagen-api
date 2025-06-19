@@ -11,8 +11,11 @@
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
+    "exa-js": "^1.8.16",
     "express": "^5.1.0",
+    "multer": "^2.0.1",
     "openai": "^5.3.0",
-    "path": "^0.12.7"
+    "path": "^0.12.7",
+    "pdf-parse": "^1.1.1"
   }
 }

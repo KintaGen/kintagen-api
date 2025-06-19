@@ -6,9 +6,14 @@ require('dotenv').config(); // This loads the .env file
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const pdf = require('pdf-parse'); 
+const multer = require('multer');
+const Exa = require('exa-js').Exa;
+
 // --- 2. SETUP ---
 const app = express();
 const port = 3001; // The port our backend server will run on
+const upload = multer({ dest: 'uploads/' }); // For handling file uploads
 
 // --- 3. MIDDLEWARE ---
 // This allows your React app (on port 3000) to communicate with this server (on port 3001)
@@ -22,6 +27,12 @@ if (!process.env.MOSAIA_HTTP_API_KEY) {
     console.error('❌ DEEPSEEK_API_KEY is not set in the .env file.');
     process.exit(1); // Stop the server if the key is missing
 }
+// Check if the API key is present
+if (!process.env.EXA_API_KEY) {
+    console.error('❌ EXA_API_KEY is not set in the .env file.');
+    process.exit(1); // Stop the server if the key is missing
+}
+
 // Helper function to run external scripts as a promise
 function runScript(command, args, options = {}) {
     // The 'options' object can now include 'cwd' to set the working directory
@@ -53,12 +64,68 @@ function runScript(command, args, options = {}) {
         reject(err);
       });
     });
-  }
+}
+const exa = new Exa(process.env.EXA_API_KEY);
+
 const openai = new OpenAI({
     baseURL: 'https://api.mosaia.ai/v1/agent',
     apiKey: process.env.MOSAIA_HTTP_API_KEY, // Securely loads the key from your .env file
 });
+async function generateSearchQueries(topic, n){
+    const userPrompt = `I'm writing a research report on ${topic} and need help coming up with diverse search queries.
+Please generate a list of ${n} search queries that would be useful for writing a research report on ${topic}. These queries can be in various formats, from simple keywords to more complex phrases. Do not add any formatting or numbering to the queries.`;
 
+    const completion = await getLLMResponse({
+        system: 'The user will ask you to help generate some search queries. Respond with only the suggested queries in plain text with no extra formatting, each on its own line.',
+        user: userPrompt,
+        temperature: 1
+    });
+    return completion.split('\n').filter(s => s.trim().length > 0).slice(0, n);
+}
+async function getSearchResults(queries, linksPerQuery=10){
+    let results = [];
+    for (const query of queries){
+        const searchResponse = await exa.searchAndContents(query, {
+            numResults: linksPerQuery
+        });
+        results.push(...searchResponse.results);
+    }
+    return results;
+}
+async function synthesizeReport(topic, searchContents, contentSlice = 750){
+    const inputData = searchContents.map(item => `--START ITEM--\nURL: ${item.url}\nCONTENT: ${item.text.slice(0, contentSlice)}\n--END ITEM--\n`).join('');
+    return await getLLMResponse({
+        system: 'You are a helpful research assistant. Write a report according to the user\'s instructions.',
+        user: 'Input Data:\n' + inputData + `Write a two paragraph research report about ${topic} based on the provided information. Include as many sources as possible. Provide citations in the text using footnote notation ([#]). First provide the report, followed by a single "References" section that lists all the URLs used, in the format [#] <url>.`,
+        //model: 'gpt-4' //want a better report? use gpt-4 (but it costs more)
+    });
+}
+//const openai = exa.wrap(openAi)
+async function getLLMResponse({system = 'You are "Project Kintagen," a highly intelligent research assistant for a biochemistry lab. Your knowledge base consists of verified scientific papers and experimental data. Your goal is to help researchers by answering questions accurately based on this provided context. Be precise, scientific, and cite the source if possible by showing its DOI and authors.', user = '', temperature = 1, model = '6845cac0d8955e09bf51f446'}){
+    const completion = await openai.chat.completions.create({
+        model,
+        temperature,
+        messages: [
+            {'role': 'system', 'content': system},
+            {'role': 'user', 'content': user},
+        ]
+    });
+    return completion.choices[0].message.content;
+}
+async function researcher(topic){
+    console.log(`Starting research on topic: "${topic}"`);
+
+    const searchQueries = await generateSearchQueries(topic, 3);
+    console.log("Generated search queries:", searchQueries);
+
+    const searchResults = await getSearchResults(searchQueries);
+    console.log(`Found ${searchResults.length} search results. Here's the first one:`, searchResults[0]);
+
+    console.log("Synthesizing report...");
+    const report = await synthesizeReport(topic, searchResults);
+
+    return report;
+}
 app.post('/api/chat', async (req, res) => {
     try {
         // Get the conversation history from the frontend's request
@@ -77,7 +144,7 @@ app.post('/api/chat', async (req, res) => {
         // 3. Fetch the relevant document content from its CID on Filecoin.
         // 4. Inject that content into the system prompt below to give the AI a knowledge base.
 
-        // Add our custom system prompt to guide the AI's behavior
+        //Add our custom system prompt to guide the AI's behavior
         let contentMessages = messages.filter(message => message.sender != "ai");
         contentMessages = contentMessages.map(message => {
             return({
@@ -85,14 +152,26 @@ app.post('/api/chat', async (req, res) => {
                 content: message.text
             })
         });
+        /*
+        // Search with full text content
+        const resultWithText = await exa.searchAndContents(
+            contentMessages[contentMessages.length - 1].content,
+            {
+            text: true,
+            numResults: 2
+            }
+        );
         const fullMessages = [
             {
+                role: "system",
+                content: `You are "Project Kintagen," a highly intelligent research assistant for a biochemistry lab. Your knowledge base consists of verified scientific papers and experimental data. Your goal is to help researchers by answering questions accurately based on this provided context. Be precise, scientific, and cite the source if possible by showing its DOI and authors.`
+            },
+            {
                 role: "user",
-                content: `You are "Project Kintagen," a highly intelligent research assistant for a biochemistry lab. Your knowledge base consists of verified scientific papers and experimental data. Your goal is to help researchers by answering questions accurately based on this provided context. Be precise, scientific, and cite the source if possible by showing its DOI and authors. The current context is: ${filecoinContext}`
+                content: `The current context is: ${filecoinContext}`
             },
             ...contentMessages
         ];
-        console.log(fullMessages)
         console.log('Sending request to Mosaia API...');
 
         // Call the DeepSeek API using the OpenAI SDK
@@ -100,9 +179,10 @@ app.post('/api/chat', async (req, res) => {
             model: "6845cac0d8955e09bf51f446",
             messages: fullMessages,
         });
-
+        */
+        const result = await researcher(`Solve: ${contentMessages[contentMessages.length - 1].content}. Current context: ${filecoinContext}. Use the current context as your knowlodge base`);
         // Send the AI's reply back to the frontend
-        res.json({ reply: completion.choices[0].message.content });
+        res.json({ reply: result });
 
     } catch (error) {
         // Robust error handling
@@ -110,6 +190,130 @@ app.post('/api/chat', async (req, res) => {
         res.status(500).json({ error: 'An internal server error occurred.' });
     }
 });
+/**
+ * [NEW] The main paper ingestion endpoint.
+ * This route orchestrates the entire process:
+ * 1. Receives a PDF from the user.
+ * 2. Extracts text from the PDF.
+ * 3. Uses AI to generate structured metadata (title, journal, year, keywords).
+ * 4. Calls the external `/api/upload/paper` endpoint with the original file and AI-generated metadata.
+ * 5. Proxies the final response back to the user.
+ */
+app.post('/api/process-and-upload-paper', upload.single('pdfFile'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ success: false, error: 'No PDF file provided.' });
+    }
+
+    try {
+        console.log(`Processing file: ${req.file.originalname}`);
+
+        // --- STEP 1: Extract Text from the Uploaded PDF ---
+        console.log('Step 1: Extracting text from PDF...');
+        const dataBuffer = fs.readFileSync(req.file.path);
+        const pdfData = await pdf(dataBuffer);
+        const contextText = pdfData.text; // Truncate for AI efficiency
+        // --- STEP 2: Use AI to Generate Structured Metadata ---
+        console.log('Step 2: Generating metadata with AI...');
+        const prompt = `
+            Analyze the text from a scientific paper. Your task is to extract the specified fields.
+            Respond ONLY with a single, valid JSON object. Do not include any explanations or markdown.
+            
+            The fields to extract are:
+            - "title": The main title of the paper.
+            - "journal": The name of the journal.
+            - "year": The 4-digit publication year as a string.
+            - "keywords": An array of 3-5 relevant keywords as strings (e.g., ["spectroscopy", "nmr"]).
+            - "doi": the doi of the article
+            - "authors": An array of authors of the article
+            If a field cannot be found, use an empty string "" or an empty array [] for keywords.
+
+            --- TEXT ---
+            ${contextText}
+        `;
+        const completion = await openai.chat.completions.create({
+            model: "6845cac0d8955e09bf51f446",
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0.1,
+        });
+        const aiResponseText = completion.choices[0].message.content;
+        console.log('Raw AI response received:', aiResponseText);
+
+        try {
+            // Find the start of the JSON object
+            const jsonStartIndex = aiResponseText.indexOf('{');
+            // Find the end of the JSON object
+            const jsonEndIndex = aiResponseText.lastIndexOf('}');
+
+            if (jsonStartIndex === -1 || jsonEndIndex === -1) {
+                throw new Error("AI response did not contain a valid JSON object.");
+            }
+            
+            // Extract the JSON string from between the braces
+            const jsonString = aiResponseText.substring(jsonStartIndex, jsonEndIndex + 1);
+
+            // Now, parse the clean JSON string
+            structuredData = JSON.parse(jsonString);
+            
+        } catch (e) {
+            console.error("Failed to parse AI response as JSON. Raw response was:", aiResponseText);
+            throw new Error("The AI model did not return valid JSON, even after cleaning. See server logs for details.");
+        }
+        // --- END: Robust JSON Parsing ---
+
+        console.log('Successfully parsed AI-generated metadata:', structuredData);
+
+        // --- STEP 3: Call the External `/api/upload/paper` Endpoint ---
+        console.log('Step 3: Calling external API to upload paper...');
+        
+        // Create a new FormData object for the external API call
+        const externalApiFormData = new FormData();
+        
+        // Append static fields
+        externalApiFormData.append('serviceUrl', 'https://caliberation-pdp.infrafolio.com'); // Replace with your actual values
+        externalApiFormData.append('serviceName', 'pdpricardo');
+        externalApiFormData.append('proofSetID', '318');
+        
+        // Append AI-generated fields, ensuring they are in the correct format
+        externalApiFormData.append('title', structuredData.title || '');
+        externalApiFormData.append('journal', structuredData.journal || '');
+        externalApiFormData.append('year', structuredData.year || new Date().getFullYear().toString());
+        externalApiFormData.append('keywords', (structuredData.keywords || []).join(', '));
+        
+        // Append the original file
+        const fileBlob = new Blob([dataBuffer], { type: req.file.mimetype });
+        externalApiFormData.append('file', fileBlob, req.file.originalname);
+
+        // Make the final request to the external API
+        const finalResponse = await fetch('https://salty-eyes-visit.loca.lt/api/upload/paper', {
+            method: 'POST',
+            body: externalApiFormData,
+        });
+
+        // --- STEP 4: Proxy the Response Back to the Client ---
+        const responseData = await finalResponse.json();
+        
+        if (!finalResponse.ok) {
+            // If the external API returned an error, forward it
+            console.error('External API returned an error:', responseData);
+            return res.status(finalResponse.status).json(responseData);
+        }
+
+        console.log('Orchestration successful. Final response:', responseData);
+        res.status(200).json(responseData); // Send the success response from the external API
+
+    } catch (error) {
+        console.error('Error in orchestration route:', error);
+        res.status(500).json({ success: false, error: error.message });
+    } finally {
+        // IMPORTANT: Clean up the temporary file created by multer
+        if (req.file) {
+            fs.unlink(req.file.path, (err) => {
+                if (err) console.error("Error deleting temp file:", err);
+            });
+        }
+    }
+});
+
 
 
 app.post('/api/analyze-nmr', async (req, res) => {
@@ -227,6 +431,12 @@ app.post('/api/analyze-ld50', async (req, res) => {
         }
     }
 });
+
+
+
+
+
+
 app.listen(port, () => {
     console.log(`✅ API server is running and listening at http://localhost:${port}`);
 });
