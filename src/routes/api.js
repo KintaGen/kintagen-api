@@ -18,6 +18,13 @@ import {
     listCIDsHandler 
 } from '../controllers/data.controller.js';
 
+import { 
+    listProjectsHandler,
+    createProjectHandler
+} from '../controllers/project.controller.js';
+
+import { getDocumentContentHandler } from '../controllers/document.controller.js';
+
 const router = express.Router();
 const upload = multer({ dest: 'uploads/' });
 const memoryUpload = multer({ storage: multer.memoryStorage() }); // For handlers expecting a buffer
@@ -41,5 +48,12 @@ router.post('/analyze-gcms', gcmsAnalysisHandler);
 router.get('/data/:type', queryDataHandler);
 router.get('/data/:type/:cid', getDataByIDHandler);
 router.get('/cids', listCIDsHandler);
+
+
+// --- Project Management Endpoints ---
+router.get('/projects', listProjectsHandler);
+router.post('/projects', createProjectHandler);
+// ---  Document Content Endpoint ---
+router.get('/document-content/:cid', getDocumentContentHandler);
 
 export default router;

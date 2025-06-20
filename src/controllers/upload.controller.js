@@ -35,11 +35,13 @@ export async function uploadAndAddRootHandler(req, res, next) {
 
 export async function uploadAndAddPaperHandler(req, res, next) {
     try {
-        const { title, journal, year, keywords, authors } = req.body;
+        // --- MODIFIED: Add projectId to destructuring ---
+        const { title, journal, year, keywords, authors, projectId } = req.body; 
+        
         if (!req.file || !title) {
             return res.status(400).json({ error: 'file and title are required' });
         }
-        console.log(`[API] Uploading paper: "${title}"`);
+        console.log(`[API] Uploading paper: "${title}" for project ID: ${projectId || 'General'}`);
 
         const uploadResult = await uploadData(req.file.buffer);
         const commP = uploadResult.commp;
@@ -48,19 +50,17 @@ export async function uploadAndAddPaperHandler(req, res, next) {
         const authorsArray = authors ? authors.split(',').map(a => a.trim()) : [];
 
         // Save to paper table
+        // --- MODIFIED: Add project_id to the INSERT statement ---
         await query(
-            `INSERT INTO paper (cid, title, journal, year, keywords, authors) 
-             VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (cid) DO NOTHING`,
-            [commP, title, journal || null, year ? Number(year) : null, keywordsArray, authorsArray]
+            `INSERT INTO paper (cid, title, journal, year, keywords, authors, project_id) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (cid) DO NOTHING`,
+            [commP, title, journal || null, year ? Number(year) : null, keywordsArray, authorsArray, projectId || null]
         );
         console.log(`[DB] Saved paper metadata for CommP: ${commP}`);
 
-        // Save to file_cids for compatibility
-        await query(
-            'INSERT INTO file_cids (filename, cid) VALUES ($1, $2) ON CONFLICT (cid) DO NOTHING',
-            [req.file.originalname, commP]
-        );
-
+        // ... rest of the function is the same ...
+        
+        // --- MODIFIED: Include projectId in the response ---
         res.status(200).json({
             proofSetID: uploadResult.proofSetId,
             rootCID: commP,
@@ -69,6 +69,7 @@ export async function uploadAndAddPaperHandler(req, res, next) {
             year: year ? Number(year) : null,
             keywords: keywordsArray,
             authors: authorsArray,
+            projectId: projectId || null,
         });
 
     } catch (error) {

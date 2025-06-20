@@ -13,7 +13,11 @@ function buildWhereClause(type, queryParams) {
     const whereClauses = [];
     const args = [];
     let argIndex = 1;
-
+    if (queryParams.projectId) {
+      whereClauses.push(`project_id = $${argIndex++}`);
+      // Ensure it's treated as a number
+      args.push(Number(queryParams.projectId));
+    }
     if (queryParams.search) {
         switch (type) {
             case 'paper':

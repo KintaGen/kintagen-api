@@ -3,7 +3,7 @@ import 'dotenv/config'; // Use this for ESM
 import { RPC_URLS } from '@filoz/synapse-sdk';
 
 const config = {
-  port: process.env.PORT || 8080,
+  port: process.env.PORT || 3001,
   db: {
     connectionString: process.env.POSTGRES_DSN,
   },
