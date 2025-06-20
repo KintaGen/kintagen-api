@@ -375,50 +375,35 @@ app.post('/api/analyze-ld50', async (req, res) => {
     console.log('Received request to /api/analyze-ld50');
     
     const { dataUrl } = req.body;
-    if (!dataUrl) {
-        return res.status(400).json({ success: false, error: 'Request body must include "dataUrl".' });
-    }
+
 
     const r_script_path = path.join(__dirname, 'scripts', 'ld50_analysis.R');
     // We still create a temp output directory for the R script to work in
     const outputDir = path.join(__dirname, 'results', `ld50_run_${Date.now()}`);
 
     try {
-        fs.mkdirSync(outputDir, { recursive: true });
-        console.log(`LD50 Analysis: Created temp output directory: ${outputDir}`);
+        //fs.mkdirSync(outputDir, { recursive: true });
+        //console.log(`LD50 Analysis: Created temp output directory: ${outputDir}`);
 
         const command = 'Rscript';
         const args = [r_script_path, dataUrl];
-        const options = { cwd: outputDir }; // Run R script inside the new unique directory
+        const options = {}; // Run R script inside the new unique directory
 
         console.log(`Starting LD50 R script with URL: ${dataUrl}`);
         const scriptOutputJson = await runScript(command, args, options);
 
         const results = JSON.parse(scriptOutputJson);
-
-        // --- MODIFICATION START ---
-
-        // Check if the upload was successful by looking for the CID
-        if (results.plotUploadError || !results.plotCid) {
-             // You can decide how to handle this. For now, we'll log it and continue,
-             // but you could also return an error if the upload is critical.
-            console.warn('R script warning: Plot upload failed.', results.plotUploadError);
-            // Fallback or error out. Let's send an error for clarity.
-            throw new Error(`Analysis complete, but plot upload failed: ${results.plotUploadError}`);
+        console.log(results)
+        if (results.status === 'success') {
+            // Optional: Here is where you would take the plot_b64 string
+            // from results.results.plot_b64 and upload it to your storage,
+            // then add the resulting URL back to the response.
+            // For now, we just forward the whole package.
+            res.json(results);
+        } else {
+            console.error('LD50 R script reported an internal error:', results.error);
+            res.status(500).json(results);
         }
-
-        // Construct the public gateway URL for the plot
-        const publicPlotUrl = `https://0xcb9e86945ca31e6c3120725bf0385cbad684040c.calibration.filcdn.io/${results.plotCid}`;
-
-        // Send success response with results and the new public plot URL
-        res.json({
-            success: true,
-            message: 'LD50 analysis and plot upload completed successfully.',
-            analysis: results,
-            plotUrl: publicPlotUrl // Send the new public URL to the frontend
-        });
-
-        // --- MODIFICATION END ---
 
     } catch (error) {
         // ... (error handling remains the same) ...
