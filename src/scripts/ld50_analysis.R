@@ -104,7 +104,7 @@ tryCatch({
   output_data$status <<- "error"
   output_data$error <<- paste("Error during DRC modeling:", e$message)
   cat(toJSON(output_data, auto_unbox = TRUE))
-  quit(status = 1)
+  quit(status = 0,save="no")
 })
 
 

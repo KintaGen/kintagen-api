@@ -96,7 +96,7 @@ if (use_sample_data) {
     output_data$status <<- "error"
     output_data$error <<- paste("Failed to read input data:", e$message)
     cat(toJSON(output_data, auto_unbox = TRUE))
-    quit(status = 1)
+    quit(status = 0,save="no")
   })
 }
 
@@ -130,7 +130,7 @@ tryCatch({
   output_data$status <<- "error"
   output_data$error <<- paste("Error during XCMS processing:", e$message)
   cat(toJSON(output_data, auto_unbox = TRUE))
-  quit(status = 1)
+  quit(status = 0,save="no")
 })
 
 
@@ -187,7 +187,7 @@ tryCatch({
   output_data$status <<- "error"
   output_data$error <<- paste("Error during statistical analysis:", e$message)
   cat(toJSON(output_data, auto_unbox = TRUE))
-  quit(status = 1)
+  quit(status = 0,save="no")
 })
 
 
