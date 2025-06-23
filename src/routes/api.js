@@ -20,7 +20,8 @@ import {
 
 import { 
     listProjectsHandler,
-    createProjectHandler
+    createProjectHandler,
+    mintProjectNftHandler
 } from '../controllers/project.controller.js';
 
 import { getDocumentContentHandler } from '../controllers/document.controller.js';
@@ -53,6 +54,8 @@ router.get('/cids', listCIDsHandler);
 // --- Project Management Endpoints ---
 router.get('/projects', listProjectsHandler);
 router.post('/projects', createProjectHandler);
+router.post('/projects/:id/mint', mintProjectNftHandler); 
+
 // ---  Document Content Endpoint ---
 router.get('/document-content/:cid', getDocumentContentHandler);
 

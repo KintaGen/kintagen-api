@@ -9,6 +9,7 @@ const createTables = [
       id SERIAL PRIMARY KEY,
       name VARCHAR(255) NOT NULL UNIQUE,
       description TEXT,
+      nft_id BIGINT UNIQUE, 
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
   `,
