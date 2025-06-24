@@ -56,6 +56,17 @@ const createTables = [
       created_at TIMESTAMPTZ DEFAULT NOW()
   );
   `,
+  `
+  CREATE TABLE IF NOT EXISTS experiment (
+      cid TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT,
+      instrument TEXT,
+      -- Foreign key to the projects table
+      project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+  `,
 ];
 
 async function initializeDatabase() {

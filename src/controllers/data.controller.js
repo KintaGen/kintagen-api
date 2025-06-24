@@ -1,27 +1,40 @@
 // src/controllers/data.controller.js
 import { query } from '../services/db.js';
 
+// --- MODIFIED: Add 'experiment' to the list of valid data types ---
 const VALID_TYPES = {
     paper: { table: 'paper', validSorts: ['created_at', 'title', 'journal', 'year', 'cid'] },
+    experiment: { table: 'experiment', validSorts: ['created_at', 'title', 'instrument', 'cid'] },
     genome: { table: 'genome', validSorts: ['created_at', 'organism', 'assembly_version', 'cid'] },
     spectrum: { table: 'spectrum', validSorts: ['created_at', 'compound', 'technique_nmr_ir_ms', 'cid'] },
     file_cids: { table: 'file_cids', validSorts: ['uploaded_at', 'filename', 'cid', 'id'] },
 };
 
 function buildWhereClause(type, queryParams) {
-    // ... logic remains identical to CJS version ...
     const whereClauses = [];
     const args = [];
     let argIndex = 1;
-    if (queryParams.projectId) {
+
+    // This filter is now generic and works for all types with a project_id
+    if (queryParams.projectId && queryParams.projectId !== '') {
       whereClauses.push(`project_id = $${argIndex++}`);
-      // Ensure it's treated as a number
       args.push(Number(queryParams.projectId));
+    } else if (queryParams.projectId === '') {
+      // --- NEW: Handle the "General (No Project)" case ---
+      // This allows filtering for items specifically NOT in a project.
+      whereClauses.push(`project_id IS NULL`);
     }
+
     if (queryParams.search) {
         switch (type) {
             case 'paper':
                 whereClauses.push(`(title ILIKE $${argIndex} OR journal ILIKE $${argIndex})`);
+                args.push(`%${queryParams.search}%`);
+                argIndex++;
+                break;
+            // --- NEW: Add search case for 'experiment' ---
+            case 'experiment':
+                whereClauses.push(`(title ILIKE $${argIndex} OR description ILIKE $${argIndex})`);
                 args.push(`%${queryParams.search}%`);
                 argIndex++;
                 break;
@@ -43,16 +56,20 @@ function buildWhereClause(type, queryParams) {
         }
     }
 
+    // Type-specific filters
     if (type === 'paper') {
         if (queryParams.year) { whereClauses.push(`year = $${argIndex++}`); args.push(Number(queryParams.year)); }
         if (queryParams.journal) { whereClauses.push(`journal ILIKE $${argIndex++}`); args.push(`%${queryParams.journal}%`); }
         if (queryParams.keyword) { whereClauses.push(`$${argIndex++} = ANY(keywords)`); args.push(queryParams.keyword); }
     }
+    if (type === 'experiment') {
+        if (queryParams.instrument) { whereClauses.push(`instrument ILIKE $${argIndex++}`); args.push(`%${queryParams.instrument}%`); }
+    }
     if (type === 'genome') {
         if (queryParams.organism) { whereClauses.push(`organism ILIKE $${argIndex++}`); args.push(`%${queryParams.organism}%`); }
         if (queryParams.assembly) { whereClauses.push(`assembly_version ILIKE $${argIndex++}`); args.push(`%${queryParams.assembly}%`); }
     }
-     if (type === 'spectrum') {
+    if (type === 'spectrum') {
         if (queryParams.compound) { whereClauses.push(`compound ILIKE $${argIndex++}`); args.push(`%${queryParams.compound}%`); }
         if (queryParams.technique) { whereClauses.push(`technique_nmr_ir_ms ILIKE $${argIndex++}`); args.push(`%${queryParams.technique}%`); }
     }
@@ -64,7 +81,9 @@ function buildWhereClause(type, queryParams) {
 export async function queryDataHandler(req, res, next) {
     try {
         const { type } = req.params;
-        if (!VALID_TYPES[type]) return res.status(400).json({ error: 'Invalid data type' });
+        if (!VALID_TYPES[type]) {
+            return res.status(400).json({ error: 'Invalid data type specified.' });
+        }
         
         const { table, validSorts } = VALID_TYPES[type];
         
@@ -89,7 +108,7 @@ export async function queryDataHandler(req, res, next) {
             sort: { by: sortBy, order: sortOrder },
         });
     } catch (error) {
-        console.error('[API ERROR] in queryDataHandler:', error);
+        console.error(`[API ERROR] in queryDataHandler for type '${req.params.type}':`, error);
         next(error);
     }
 }
@@ -97,17 +116,23 @@ export async function queryDataHandler(req, res, next) {
 export async function getDataByIDHandler(req, res, next) {
     try {
         const { type, cid } = req.params;
-        if (!VALID_TYPES[type]) return res.status(400).json({ error: 'Invalid data type' });
-        if (!cid) return res.status(400).json({ error: 'CID is required' });
+        if (!VALID_TYPES[type]) {
+            return res.status(400).json({ error: 'Invalid data type' });
+        }
+        if (!cid) {
+            return res.status(400).json({ error: 'CID is required' });
+        }
 
         const { table } = VALID_TYPES[type];
         const result = await query(`SELECT * FROM ${table} WHERE cid = $1`, [cid]);
 
-        if (result.rows.length === 0) return res.status(404).json({ error: 'Record not found' });
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Record not found' });
+        }
         
         res.status(200).json({ data: result.rows[0] });
     } catch (error) {
-        console.error('[API ERROR] in getDataByIDHandler:', error);
+        console.error(`[API ERROR] in getDataByIDHandler for type '${req.params.type}':`, error);
         next(error);
     }
 }
