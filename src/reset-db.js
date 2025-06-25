@@ -8,6 +8,8 @@ const tablesToDrop = [
   'paper',
   'spectrum',
   'genome',
+  'experiment',
+  'analysis',
   'file_cids',
   'projects',
 ];

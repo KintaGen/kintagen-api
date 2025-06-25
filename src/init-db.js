@@ -67,6 +67,17 @@ const createTables = [
       created_at TIMESTAMPTZ DEFAULT NOW()
   );
   `,
+  `
+  CREATE TABLE IF NOT EXISTS analysis (
+      cid TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT,
+      source_cids TEXT[], -- Array of CIDs used as input for the analysis
+      -- Foreign key to the projects table
+      project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+  `,
 ];
 
 async function initializeDatabase() {

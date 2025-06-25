@@ -5,6 +5,7 @@ import { query } from '../services/db.js';
 const VALID_TYPES = {
     paper: { table: 'paper', validSorts: ['created_at', 'title', 'journal', 'year', 'cid'] },
     experiment: { table: 'experiment', validSorts: ['created_at', 'title', 'instrument', 'cid'] },
+    analysis: { table: 'analysis', validSorts: ['created_at', 'title', 'cid'] }, 
     genome: { table: 'genome', validSorts: ['created_at', 'organism', 'assembly_version', 'cid'] },
     spectrum: { table: 'spectrum', validSorts: ['created_at', 'compound', 'technique_nmr_ir_ms', 'cid'] },
     file_cids: { table: 'file_cids', validSorts: ['uploaded_at', 'filename', 'cid', 'id'] },
@@ -34,6 +35,11 @@ function buildWhereClause(type, queryParams) {
                 break;
             // --- NEW: Add search case for 'experiment' ---
             case 'experiment':
+                whereClauses.push(`(title ILIKE $${argIndex} OR description ILIKE $${argIndex})`);
+                args.push(`%${queryParams.search}%`);
+                argIndex++;
+                break;
+            case 'analysis':
                 whereClauses.push(`(title ILIKE $${argIndex} OR description ILIKE $${argIndex})`);
                 args.push(`%${queryParams.search}%`);
                 argIndex++;
