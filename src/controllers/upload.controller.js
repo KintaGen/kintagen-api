@@ -55,6 +55,17 @@ export async function processAndUploadHandler(req, res, next) {
                 [commP, manualTitle, metadata.projectId]
             );
             console.log(`[DB] Saved experiment data for CommP: ${commP}`);
+        } else if (dataType === 'analysis') { 
+            if (!manualTitle) throw new Error("A title is required for analysis data.");
+            
+            metadata.title = manualTitle;
+
+            await query(
+                `INSERT INTO analysis (cid, title, project_id) VALUES ($1, $2, $3) ON CONFLICT (cid) DO NOTHING`,
+                [commP, manualTitle, metadata.projectId]
+            );
+            console.log(`[DB] Saved analysis data for CommP: ${commP}`);
+
         } else {
             return res.status(400).json({ error: 'Invalid data type specified.' });
         }
