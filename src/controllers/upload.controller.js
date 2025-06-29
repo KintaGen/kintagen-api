@@ -10,7 +10,15 @@ import fs from 'fs';
  * It categorizes data based on the 'dataType' parameter from the request.
  */
 export async function processAndUploadHandler(req, res, next) {
-    const { projectId, dataType, title: manualTitle } = req.body;
+    const { 
+        projectId, 
+        dataType, 
+        title: manualTitle, 
+        isEncrypted,
+    } = req.body;
+    
+    const isEncryptedBool = isEncrypted === 'true';
+
     if (!req.file || !dataType) {
         return res.status(400).json({ error: 'A file and data type are required.' });
     }
@@ -18,53 +26,83 @@ export async function processAndUploadHandler(req, res, next) {
     const tempFilePath = req.file.path;
 
     try {
-        console.log(`[API] Processing ${dataType} for project ${projectId || 'General'}`);
+        console.log(`[API] Processing ${dataType} for project ${projectId || 'General'}. Encrypted: ${isEncryptedBool}`);
         
-        // --- Universal Step: Upload to FilCDN ---
         const fileBuffer = fs.readFileSync(tempFilePath);
         const uploadResult = await uploadData(fileBuffer);
         const commP = uploadResult.commp;
         
         let metadata = {
             cid: commP,
-            projectId: projectId || null,
+            projectId: projectId ? Number(projectId) : null,
             title: '',
         };
 
         // --- Data Type Specific Logic ---
         if (dataType === 'paper') {
-            const text = await pdfService.extractTextFromBuffer(fileBuffer);
-            const aiMeta = await aiService.extractMetadataFromText(text);
             
-            metadata = { ...metadata, ...aiMeta, title: aiMeta.title };
+            // --- NEW, ROBUST LOGIC BLOCK ---
+            if (isEncryptedBool) {
+                // 1. Handle Encrypted Files First: No parsing, just save.
+                console.log('[API] File is encrypted. Skipping text extraction.');
+                metadata.title = req.file.originalname;
+
+                await query(
+                    `INSERT INTO paper (cid, title, project_id) VALUES ($1, $2, $3) ON CONFLICT (cid) DO NOTHING`,
+                    [commP, metadata.title, metadata.projectId]
+                );
+
+            } else if (req.file.mimetype === 'application/pdf') {
+                // 2. Handle Unencrypted PDFs: Full parse and AI pipeline.
+                console.log('[API] File is a PDF. Parsing text and running AI extraction...');
+                const text = await pdfService.extractTextFromBuffer(fileBuffer);
+                const aiMeta = await aiService.extractMetadataFromText(text);
+                
+                metadata = { ...metadata, ...aiMeta, title: aiMeta.title };
+                
+                await query(
+                    `INSERT INTO paper (cid, title, journal, year, keywords, authors, project_id) 
+                     VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (cid) DO NOTHING`,
+                    [commP, aiMeta.title, aiMeta.journal, aiMeta.year, aiMeta.keywords, aiMeta.authors, metadata.projectId]
+                );
             
-            await query(
-                `INSERT INTO paper (cid, title, journal, year, keywords, authors, project_id) 
-                 VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (cid) DO NOTHING`,
-                [commP, aiMeta.title, aiMeta.journal, aiMeta.year, aiMeta.keywords, aiMeta.authors, metadata.projectId]
-            );
+            } else if (req.file.mimetype.startsWith('text/')) {
+                // 3. Handle Unencrypted Text Files: Read text, but maybe skip AI.
+                console.log('[API] File is a plain text file. Using content as description.');
+                const textContent = fileBuffer.toString('utf-8');
+                // For a simple text file, we can use its name as the title and content as a description if your DB has such a field.
+                // For now, we'll just use the filename as title.
+                metadata.title = req.file.originalname;
+
+                await query(
+                    `INSERT INTO paper (cid, title, project_id) VALUES ($1, $2, $3) ON CONFLICT (cid) DO NOTHING`,
+                    [commP, metadata.title, metadata.projectId]
+                );
+            } else {
+                // 4. Handle Other Unencrypted File Types: Save without parsing.
+                console.log(`[API] Unencrypted file type '${req.file.mimetype}' is not parsable. Saving with filename as title.`);
+                metadata.title = req.file.originalname;
+                
+                await query(
+                    `INSERT INTO paper (cid, title, project_id) VALUES ($1, $2, $3) ON CONFLICT (cid) DO NOTHING`,
+                    [commP, metadata.title, metadata.projectId]
+                );
+            }
+
             console.log(`[DB] Saved paper metadata for CommP: ${commP}`);
 
-        } else if (dataType === 'experiment') {
-            if (!manualTitle) throw new Error("A title is required for experiment data.");
+        } else if (dataType === 'experiment' || dataType === 'analysis') {
+            if (!manualTitle) throw new Error(`A title is required for ${dataType} data.`);
             
             metadata.title = manualTitle;
 
+            const targetTable = dataType;
             await query(
-                `INSERT INTO experiment (cid, title, project_id) VALUES ($1, $2, $3) ON CONFLICT (cid) DO NOTHING`,
-                [commP, manualTitle, metadata.projectId]
+                `INSERT INTO ${targetTable} (cid, title, project_id) 
+                 VALUES ($1, $2, $3) ON CONFLICT (cid) DO NOTHING`,
+                [commP, metadata.title, metadata.projectId]
             );
-            console.log(`[DB] Saved experiment data for CommP: ${commP}`);
-        } else if (dataType === 'analysis') { 
-            if (!manualTitle) throw new Error("A title is required for analysis data.");
-            
-            metadata.title = manualTitle;
-
-            await query(
-                `INSERT INTO analysis (cid, title, project_id) VALUES ($1, $2, $3) ON CONFLICT (cid) DO NOTHING`,
-                [commP, manualTitle, metadata.projectId]
-            );
-            console.log(`[DB] Saved analysis data for CommP: ${commP}`);
+            console.log(`[DB] Saved ${dataType} data for CommP: ${commP}`);
 
         } else {
             return res.status(400).json({ error: 'Invalid data type specified.' });
@@ -82,7 +120,6 @@ export async function processAndUploadHandler(req, res, next) {
         console.error(`[API ERROR] in processAndUploadHandler:`, error);
         next(error);
     } finally {
-        // Always clean up the temporary file
         fs.unlink(tempFilePath, (err) => {
             if (err) console.error("Error deleting temp file:", err);
         });
