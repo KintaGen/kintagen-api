@@ -27,11 +27,10 @@ export async function processAndUploadHandler(req, res, next) {
 
     try {
         console.log(`[API] Processing ${dataType} for project ${projectId || 'General'}. Encrypted: ${isEncryptedBool}`);
-        
         const fileBuffer = fs.readFileSync(tempFilePath);
         const uploadResult = await uploadData(fileBuffer);
         const commP = uploadResult.commp;
-        
+
         let metadata = {
             cid: commP,
             projectId: projectId ? Number(projectId) : null,
@@ -69,7 +68,6 @@ export async function processAndUploadHandler(req, res, next) {
             } else if (req.file.mimetype.startsWith('text/')) {
                 // 3. Handle Unencrypted Text Files: Read text, but maybe skip AI.
                 console.log('[API] File is a plain text file. Using content as description.');
-                const textContent = fileBuffer.toString('utf-8');
                 // For a simple text file, we can use its name as the title and content as a description if your DB has such a field.
                 // For now, we'll just use the filename as title.
                 metadata.title = req.file.originalname;
@@ -109,7 +107,7 @@ export async function processAndUploadHandler(req, res, next) {
         }
         
         // Return a unified response
-        res.status(200).json({
+        return res.status(200).json({
             message: `${dataType.charAt(0).toUpperCase() + dataType.slice(1)} uploaded successfully!`,
             rootCID: commP,
             title: metadata.title,
@@ -145,7 +143,7 @@ export async function uploadAndAddRootHandler(req, res, next) {
         );
         console.log(`[DB] Saved generic mapping: ${req.file.originalname} -> ${uploadResult.commp}`);
 
-        res.status(200).json({
+        return res.status(200).json({
             proofSetID: uploadResult.proofSetId,
             rootCID: uploadResult.commp,
             message: "File uploaded and root added successfully",
@@ -176,7 +174,7 @@ export async function uploadAndAddGenomeHandler(req, res, next) {
         );
         console.log(`[DB] Saved genome metadata for CommP: ${commP}`);
 
-        res.status(200).json({
+        return res.status(200).json({
             proofSetID: uploadResult.proofSetId,
             rootCID: commP,
             organism,

@@ -27,15 +27,12 @@ export async function getSynapse() {
  * @returns {Promise<{commp: string, size: number, proofSetId: number}>} The result of the upload.
  */
 export async function uploadData(dataBuffer, options = {}) {
+  // --- This part remains the same: setup and preflight check ---
   const synapse = await getSynapse();
-
   console.log('[SYNAPSE] Creating/resolving storage service...');
-
-  // The createStorage method also benefits from the withCDN flag,
-  // ensuring it selects CDN-compatible providers.
   const storage = await synapse.createStorage({
-    proofSetId: options.proofSetId, // Can be undefined
-    withCDN: true, // Explicitly set here too for robustness
+    proofSetId: options.proofSetId,
+    withCDN: true,
     callbacks: {
       onProviderSelected: (provider) => console.log(`[SYNAPSE] Provider selected: ${provider.owner}`),
       onProofSetResolved: (info) => console.log(`[SYNAPSE] Proof set resolved. ID: ${info.proofSetId}, Is Existing: ${info.isExisting}`),
@@ -44,36 +41,58 @@ export async function uploadData(dataBuffer, options = {}) {
     }
   });
 
-  // Pre-flight check before uploading
   console.log('[SYNAPSE] Performing preflight check...');
   const preflight = await storage.preflightUpload(dataBuffer.length);
   if (!preflight.allowanceCheck.sufficient) {
-    console.error('[SYNAPSE] Preflight check failed: Allowance not sufficient.');
-    console.error(`  - Required: ${JSON.stringify(preflight.allowanceCheck.required)}, Has: ${JSON.stringify(preflight.allowanceCheck.current)}`);
-    throw new Error('Allowance not sufficient to upload file. Please run the setup script or increase allowance via the web app.');
+    throw new Error('Allowance not sufficient to upload file.');
   }
   console.log('[SYNAPSE] Preflight check passed.');
 
-
+  // --- THIS IS THE NEW, FAST-RETURN LOGIC ---
   console.log(`[SYNAPSE] Starting upload of ${dataBuffer.length} bytes to proof set ${storage.proofSetId}...`);
 
-  const uploadResult = await storage.upload(dataBuffer, {
-    onUploadComplete: (commp) => console.log(`[SYNAPSE] Upload complete to provider. CommP: ${commp}`),
-    onRootAdded: (tx) => {
-      if (tx) {
-        console.log(`[SYNAPSE] Root addition transaction sent: ${tx.hash}`);
-      } else {
-        console.log('[SYNAPSE] Root added to proof set (legacy server).');
+  // We wrap the upload process in a new Promise.
+  return new Promise((resolve, reject) => {
+    let capturedCommp = null;
+    let hasResolved = false; // A flag to prevent resolving the promise multiple times
+
+    // We do NOT `await` this call. We let it run and listen to its callbacks.
+    storage.upload(dataBuffer, {
+      onUploadComplete: (commp) => {
+        console.log(`[SYNAPSE CALLBACK] Upload to provider complete. CommP: ${commp}`);
+        // Capture the CommP (CID) as soon as it's available.
+        capturedCommp = commp;
+      },
+      onRootAdded: (tx) => {
+        // This is the "fast" event we want to return on.
+        if (hasResolved) return; // If we've already resolved, do nothing.
+        hasResolved = true;
+
+        if (tx) {
+          console.log(`[SYNAPSE CALLBACK] Root addition transaction sent: ${tx.hash}. RESOLVING PROMISE NOW.`);
+        } else {
+          console.log('[SYNAPSE CALLBACK] Root added to proof set (legacy server). RESOLVING PROMISE NOW.');
+        }
+
+        // Resolve our custom promise with the final result object.
+        resolve({
+          commp: capturedCommp.toString(),
+          size: dataBuffer.length,
+          proofSetId: storage.proofSetId,
+        });
+      },
+      onRootConfirmed: (rootIds) => {
+        // This callback will still fire later, but our function will have already returned.
+        // This is now just for logging purposes.
+        console.log(`[SYNAPSE CALLBACK] (Info only) Root IDs confirmed on-chain later: ${rootIds.join(', ')}`);
+      },
+    }).catch(error => {
+      // If the underlying storage.upload promise fails for any reason
+      // before we have resolved, we should reject our promise.
+      if (!hasResolved) {
+        console.error('[SYNAPSE] Upload process failed.', error);
+        reject(error);
       }
-    },
-    onRootConfirmed: (rootIds) => console.log(`[SYNAPSE] Root IDs confirmed on-chain: ${rootIds.join(', ')}`),
+    });
   });
-
-  console.log(`[SYNAPSE] Successfully uploaded. CommP: ${uploadResult.commp}`);
-
-  return {
-    commp: uploadResult.commp.toString(),
-    size: uploadResult.size,
-    proofSetId: storage.proofSetId,
-  };
 }
