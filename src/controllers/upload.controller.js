@@ -15,6 +15,7 @@ export async function processAndUploadHandler(req, res, next) {
         dataType, 
         title: manualTitle, 
         isEncrypted,
+        litTokenId, // Capture the Lit Token ID from the request
     } = req.body;
     
     const isEncryptedBool = isEncrypted === 'true';
@@ -27,78 +28,74 @@ export async function processAndUploadHandler(req, res, next) {
 
     try {
         console.log(`[API] Processing ${dataType} for project ${projectId || 'General'}. Encrypted: ${isEncryptedBool}`);
+        
         const fileBuffer = fs.readFileSync(tempFilePath);
         const uploadResult = await uploadData(fileBuffer);
         const commP = uploadResult.commp;
 
-        let metadata = {
+        // This object now holds all metadata that will be returned
+        let responseMetadata = {
             cid: commP,
             projectId: projectId ? Number(projectId) : null,
             title: '',
+            isEncrypted: isEncryptedBool,
+            litTokenId: litTokenId || null,
         };
 
-        // --- Data Type Specific Logic ---
         if (dataType === 'paper') {
-            
-            // --- NEW, ROBUST LOGIC BLOCK ---
             if (isEncryptedBool) {
-                // 1. Handle Encrypted Files First: No parsing, just save.
-                console.log('[API] File is encrypted. Skipping text extraction.');
-                metadata.title = req.file.originalname;
+                console.log('[API] File is encrypted. Saving with filename as title.');
+                responseMetadata.title = req.file.originalname;
 
+                // --- MODIFIED: Insert encryption metadata ---
                 await query(
-                    `INSERT INTO paper (cid, title, project_id) VALUES ($1, $2, $3) ON CONFLICT (cid) DO NOTHING`,
-                    [commP, metadata.title, metadata.projectId]
+                    `INSERT INTO paper (cid, title, project_id, is_encrypted, lit_token_id) 
+                     VALUES ($1, $2, $3, $4, $5) ON CONFLICT (cid) DO NOTHING`,
+                    [commP, responseMetadata.title, responseMetadata.projectId, isEncryptedBool, responseMetadata.litTokenId]
                 );
 
-            } else if (req.file.mimetype === 'application/pdf') {
-                // 2. Handle Unencrypted PDFs: Full parse and AI pipeline.
-                console.log('[API] File is a PDF. Parsing text and running AI extraction...');
-                const text = await pdfService.extractTextFromBuffer(fileBuffer);
-                const aiMeta = await aiService.extractMetadataFromText(text);
-                
-                metadata = { ...metadata, ...aiMeta, title: aiMeta.title };
-                
-                await query(
-                    `INSERT INTO paper (cid, title, journal, year, keywords, authors, project_id) 
-                     VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (cid) DO NOTHING`,
-                    [commP, aiMeta.title, aiMeta.journal, aiMeta.year, aiMeta.keywords, aiMeta.authors, metadata.projectId]
-                );
-            
-            } else if (req.file.mimetype.startsWith('text/')) {
-                // 3. Handle Unencrypted Text Files: Read text, but maybe skip AI.
-                console.log('[API] File is a plain text file. Using content as description.');
-                // For a simple text file, we can use its name as the title and content as a description if your DB has such a field.
-                // For now, we'll just use the filename as title.
-                metadata.title = req.file.originalname;
+            } else { // Handle unencrypted papers (PDF or text)
+                let text = '';
+                if (req.file.mimetype === 'application/pdf') {
+                    console.log('[API] File is a PDF. Parsing text...');
+                    text = await pdfService.extractTextFromBuffer(fileBuffer);
+                } else if (req.file.mimetype.startsWith('text/')) {
+                    console.log('[API] File is a plain text file.');
+                    text = fileBuffer.toString('utf-8');
+                }
 
-                await query(
-                    `INSERT INTO paper (cid, title, project_id) VALUES ($1, $2, $3) ON CONFLICT (cid) DO NOTHING`,
-                    [commP, metadata.title, metadata.projectId]
-                );
-            } else {
-                // 4. Handle Other Unencrypted File Types: Save without parsing.
-                console.log(`[API] Unencrypted file type '${req.file.mimetype}' is not parsable. Saving with filename as title.`);
-                metadata.title = req.file.originalname;
-                
-                await query(
-                    `INSERT INTO paper (cid, title, project_id) VALUES ($1, $2, $3) ON CONFLICT (cid) DO NOTHING`,
-                    [commP, metadata.title, metadata.projectId]
-                );
+                if (text) {
+                    console.log('[API] Running AI metadata extraction...');
+                    const aiMeta = await aiService.extractMetadataFromText(text);
+                    responseMetadata = { ...responseMetadata, ...aiMeta, title: aiMeta.title };
+                    
+                    await query(
+                        `INSERT INTO paper (cid, title, journal, year, keywords, authors, project_id, is_encrypted, lit_token_id) 
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (cid) DO NOTHING`,
+                        [commP, aiMeta.title, aiMeta.journal, aiMeta.year, aiMeta.keywords, aiMeta.authors, responseMetadata.projectId, isEncryptedBool, responseMetadata.litTokenId]
+                    );
+                } else {
+                    console.log(`[API] Unencrypted file type '${req.file.mimetype}' not parsable. Saving with filename as title.`);
+                    responseMetadata.title = req.file.originalname;
+                    await query(
+                        `INSERT INTO paper (cid, title, project_id, is_encrypted, lit_token_id) 
+                         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (cid) DO NOTHING`,
+                        [commP, responseMetadata.title, responseMetadata.projectId, isEncryptedBool, responseMetadata.litTokenId]
+                    );
+                }
             }
-
             console.log(`[DB] Saved paper metadata for CommP: ${commP}`);
 
         } else if (dataType === 'experiment' || dataType === 'analysis') {
             if (!manualTitle) throw new Error(`A title is required for ${dataType} data.`);
-            
-            metadata.title = manualTitle;
-
+            responseMetadata.title = manualTitle;
             const targetTable = dataType;
+
+            // --- MODIFIED: Insert encryption metadata for experiments and analyses ---
             await query(
-                `INSERT INTO ${targetTable} (cid, title, project_id) 
-                 VALUES ($1, $2, $3) ON CONFLICT (cid) DO NOTHING`,
-                [commP, metadata.title, metadata.projectId]
+                `INSERT INTO ${targetTable} (cid, title, project_id, is_encrypted, lit_token_id) 
+                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (cid) DO NOTHING`,
+                [commP, responseMetadata.title, responseMetadata.projectId, isEncryptedBool, responseMetadata.litTokenId]
             );
             console.log(`[DB] Saved ${dataType} data for CommP: ${commP}`);
 
@@ -106,12 +103,14 @@ export async function processAndUploadHandler(req, res, next) {
             return res.status(400).json({ error: 'Invalid data type specified.' });
         }
         
-        // Return a unified response
+        // Return a unified response containing the new metadata
         return res.status(200).json({
             message: `${dataType.charAt(0).toUpperCase() + dataType.slice(1)} uploaded successfully!`,
             rootCID: commP,
-            title: metadata.title,
-            projectId: metadata.projectId,
+            title: responseMetadata.title,
+            projectId: responseMetadata.projectId,
+            isEncrypted: isEncryptedBool,
+            litTokenId: responseMetadata.litTokenId,
         });
 
     } catch (error) {
