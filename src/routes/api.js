@@ -6,7 +6,7 @@ import multer from 'multer';
 
 // Unified handlers for chat, analysis, and data querying
 import { chatHandler } from '../controllers/chat.controller.js';
-import { nmrAnalysisHandler, ld50AnalysisHandler, gcmsAnalysisHandler } from '../controllers/analysis.controller.js';
+import { nmrAnalysisHandler, ld50AnalysisHandler, gcmsDifferentialHandler,gcmsProfilingHandler } from '../controllers/analysis.controller.js';
 import { queryDataHandler, getDataByIDHandler, listCIDsHandler } from '../controllers/data.controller.js';
 
 // The new, flexible upload handler + legacy handlers
@@ -72,9 +72,9 @@ router.get('/cids', listCIDsHandler);
 router.get('/document-content/:cid', getDocumentContentHandler);
 
 // --- Analysis Tools (R Scripts) ---
-router.post('/analyze-nmr', nmrAnalysisHandler);
-router.post('/analyze-ld50', ld50AnalysisHandler);
-router.post('/analyze-gcms', gcmsAnalysisHandler);
-
+router.post('/analyze/nmr', nmrAnalysisHandler);
+router.post('/analyze/ld50', ld50AnalysisHandler);
+router.post('/analyze/gcms-differential', gcmsDifferentialHandler);
+router.post('/analyze/gcms-profiling', gcmsProfilingHandler);   
 
 export default router;

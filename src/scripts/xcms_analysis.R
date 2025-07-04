@@ -61,10 +61,9 @@ is_arg_missing <- function(arg) {
 }
 args <- commandArgs(trailingOnly = TRUE)
 
-data_path_arg <- args[1]
-pheno_file_arg <- args[2]
+zip_file_arg <- args[1]
 
-use_sample_data <- is_arg_missing(data_path_arg) || is_arg_missing(pheno_file_arg)
+use_sample_data <- is_arg_missing(zip_file_arg)
 if (use_sample_data) {
   log_message("No command line arguments provided. Using faahKO sample data.")
   data_path <- system.file("cdf", package = "faahKO")
@@ -77,26 +76,57 @@ if (use_sample_data) {
     stringsAsFactors = FALSE
   )
 } else {
-  log_message(paste("Using data from directory:", data_path_arg))
-  log_message(paste("Using metadata from file:", pheno_file_arg))
+  log_message(paste("Received project ZIP file:", zip_file_arg))
+  
+  # Create a temporary directory to extract the files into.
+  unzip_dir <- file.path(tempdir(), "xcms_project")
+  dir.create(unzip_dir, recursive = TRUE, showWarnings = FALSE)
+  
+  log_message(paste("Extracting project to temporary directory:", unzip_dir))
+  
+  
   tryCatch({
-    data_path <- data_path_arg
-    file_list <- list.files(data_path, pattern = "\\.mzML$|\\.mzXML$|\\.CDF$", full.names = TRUE, ignore.case = TRUE, recursive = TRUE)
-    if (length(file_list) == 0) stop("No data files (.mzML, .mzXML, .CDF) found in the specified directory.")
+    # Unzip the entire project archive.
+    unzip(zip_file_arg, exdir = unzip_dir)
     
-    pheno_data <- read.csv(pheno_file_arg, stringsAsFactors = FALSE)
+    # --- SMART FILE FINDING ---
+    data_path <- unzip_dir
+    
+    pheno_file_candidates <- list.files(data_path, pattern = "pheno|meta.*\\.csv$", full.names = TRUE, ignore.case = TRUE, recursive = TRUE)
+    if (length(pheno_file_candidates) == 0) {
+      stop("No metadata file (e.g., 'phenodata.csv') found in the ZIP archive.")
+    }
+    pheno_file_path <- pheno_file_candidates[1]
+    log_message(paste("Automatically detected metadata file:", basename(pheno_file_path)))
+    
+    file_list <- list.files(data_path, pattern = "\\.mzML$|\\.mzXML$|\\.CDF$", full.names = TRUE, ignore.case = TRUE, recursive = TRUE)
+    if (length(file_list) == 0) {
+        stop("No raw data files (.mzML, .mzXML, .CDF) found in the ZIP archive.")
+    }
+    log_message(paste("Found", length(file_list), "raw data files."))
+
+    # Read the metadata.
+    pheno_data <- read.csv(pheno_file_path, stringsAsFactors = FALSE)
+    
+    # --- THIS IS THE BLOCK YOU ASKED FOR ---
+    # The R script needs to match the sample names in the metadata CSV
+    # with the actual filenames from the ZIP archive.
+    # We remove the file extensions (like .mzML) to make them match.
     pheno_data$sample_name <- tools::file_path_sans_ext(basename(pheno_data$sample_name))
     
+    # Check if a 'polarity' column exists in the metadata. 
+    # This is optional for some mass spec analyses.
     if (!"polarity" %in% names(pheno_data)) {
       log_message("Warning: 'polarity' column not found in metadata. Defaulting to positive mode (1).")
+      # If it's not there, we create it and set a default value (e.g., 1 for positive mode).
       pheno_data$polarity <- 1
     }
     
   }, error = function(e) {
     output_data$status <<- "error"
-    output_data$error <<- paste("Failed to read input data:", e$message)
+    output_data$error <<- paste("Failed to process ZIP archive:", e$message)
     cat(toJSON(output_data, auto_unbox = TRUE))
-    quit(status = 0,save="no")
+    quit(status = 0, save = "no")
   })
 }
 

@@ -49,9 +49,9 @@ export async function ld50AnalysisHandler(req, res, next) {
 }
 
 export async function gcmsAnalysisHandler(req, res, next) {
-    const { dataPath, phenoFile } = req.body;
+    const { dataPath } = req.body;
     const r_script_path = path.join(path.dirname(__dirname), 'scripts', 'xcms_analysis.R');
-    const args = [r_script_path, dataPath, phenoFile];
+    const args = [r_script_path, dataPath];
 
     try {
         const scriptOutputJson = await runScript('Rscript', args);
@@ -63,6 +63,44 @@ export async function gcmsAnalysisHandler(req, res, next) {
             res.status(500).json(results);
         }
     } catch (error) {
+        next(error);
+    }
+}
+export async function gcmsDifferentialHandler(req, res, next) {
+    const { dataPath } = req.body;
+    const r_script_path = path.join(path.dirname(__dirname), 'scripts', 'xcms_analysis.R');
+    const args = [r_script_path, dataPath];
+    try {
+        console.log('[API] Running GC-MS Differential Analysis...');
+        const scriptOutputJson = await runScript('Rscript', args);
+        const results = JSON.parse(scriptOutputJson);
+        if (results.status === 'error') throw new Error(results.error);
+        res.json(results);
+    } catch (error) {
+        console.error('[API ERROR] in gcmsDifferentialHandler:', error);
+        next(error);
+    }
+}
+
+// --- NEW HANDLER for profiling analysis ---
+export async function gcmsProfilingHandler(req, res, next) {
+    const { dataPath } = req.body;
+    const r_script_path = path.join(path.dirname(__dirname), 'scripts', 'xcms_profiling.R');
+    const args = [r_script_path, dataPath];
+    
+    // Note: The robust solution involves downloading and unzipping the dataCid first.
+    // For now, we are assuming the R script can handle a URL to a directory if needed,
+    // or that you will implement the unzip logic here later.
+
+    try {
+        console.log('[API] Running GC-MS Profiling Analysis...');
+        const scriptOutputJson = await runScript('Rscript', args);
+        console.log(scriptOutputJson)
+        const results = JSON.parse(scriptOutputJson);
+        if (results.status === 'error') throw new Error(results.error);
+        res.json(results);
+    } catch (error) {
+        console.error('[API ERROR] in gcmsProfilingHandler:', error);
         next(error);
     }
 }
