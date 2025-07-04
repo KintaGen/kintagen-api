@@ -55,6 +55,13 @@ if(use_sample_data) {
   data_path <- args[1]
   message(paste("Using custom data path:", data_path))
 }
+gg_to_base64 <- function(gg, width = 8, height = 6) {
+  temp_file <- tempfile(fileext = ".png")
+  ggsave(temp_file, plot = gg, width = width, height = height, dpi = 150)
+  base64_string <- base64enc::base64encode(temp_file)
+  unlink(temp_file)
+  return(paste0("data:image/png;base64,", base64_string))
+}
 # --- 3. Main Analysis Function ---
 run_profiling <- function(data_path) {
   # --- Data Loading & XCMS Pipeline ---
@@ -98,18 +105,18 @@ run_profiling <- function(data_path) {
   bpc_data <- chromatogram(xdata, type = "bpc")
   bpc_df <- do.call(rbind, lapply(1:length(bpc_data), function(i) {data.frame(sample = pData(bpc_data)$sample_name[i], rt = rtime(bpc_data[[i]]), intensity = intensity(bpc_data[[i]]))}))
   bpc_plot_gg <- ggplot(bpc_df, aes(x = rt, y = intensity, group = sample, color = sample)) + geom_line() + labs(title = "Base Peak Chromatograms", x = "Retention Time (sec)", y = "Intensity", color = "Sample") + theme_bw() + theme(legend.position = "bottom")
-  png("bpc_plot.png", width = 800, height = 600, res = 100); dev.off()
-  bpc_plot_b64 <- paste0("data:image/png;base64,", base64enc::base64encode("bpc_plot.png"))
+  #png("bpc_plot.png", width = 800, height = 600, res = 100); dev.off()
+  bpc_plot_b64 <- gg_to_base64(bpc_plot_gg)
   
   map_plot_gg <- ggplot(as.data.frame(feature_def), aes(x = rtmed, y = mzmed)) + geom_point(color = "steelblue", alpha = 0.7) + labs(title = "Metabolite Feature Map", x = "Retention Time (sec)", y = "m/z") + theme_bw()
-  png("metabolite_map.png", width = 800, height = 600, res = 100); dev.off()
-  metabolite_map_b64 <- paste0("data:image/png;base64,", base64enc::base64encode("metabolite_map.png"))
+  #png("metabolite_map.png", width = 800, height = 600, res = 100); dev.off()
+  metabolite_map_b64 <- gg_to_base64(map_plot_gg)
   
   # --- Generate Mass Spectrum plots for Top 5 Features ---
   top_features <- final_table %>%
     mutate(total_intensity = rowSums(select(., starts_with("ko") | starts_with("wt")), na.rm = TRUE)) %>%
     arrange(desc(total_intensity)) %>%
-    head(5)
+    head(1)
   
   spectrum_plots_list <- lapply(1:nrow(top_features), function(i) {
     feature_id <- top_features$feature_id[i]
@@ -175,9 +182,9 @@ run_profiling <- function(data_path) {
   top_spectra_plot_b64 <- NULL
   if (length(spectrum_plots_list) > 0) {
     combined_plot <- wrap_plots(spectrum_plots_list, ncol = 1)
-    png("top_features_spectra.png", width = 800, height = 1500, res = 100)
-    dev.off()
-    top_spectra_plot_b64 <- paste0("data:image/png;base64,", base64enc::base64encode("top_features_spectra.png"))
+    #png("top_features_spectra.png", width = 800, height = 1500, res = 100)
+    #dev.off()
+    top_spectra_plot_b64 <- gg_to_base64(combined_plot)
   }
   
   return(list(
