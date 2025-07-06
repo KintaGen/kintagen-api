@@ -100,7 +100,9 @@ export async function processAndUploadHandler(req, res, next) {
             console.log(`[DB] Saved ${dataType} data for CommP: ${commP}`);
 
         } else {
-            return res.status(400).json({ error: 'Invalid data type specified.' });
+            return res.status(200).json({
+                rootCID: commP
+            });
         }
         
         // Return a unified response containing the new metadata

@@ -33,6 +33,7 @@ export async function getDocumentContentHandler(req, res, next) {
         // 2. Fetch the raw file content from the gateway
         const url = buildFilcdnUrl(cid);
         const response = await fetch(url);
+        console.log(response)
         if (!response.ok) throw new Error(`Failed to fetch CID ${cid} from gateway.`);
         
         const fileBuffer = Buffer.from(await response.arrayBuffer());
@@ -47,7 +48,6 @@ export async function getDocumentContentHandler(req, res, next) {
             
             const base64Content = fileBuffer.toString('base64');
             const mimetype = response.headers.get('content-type') || 'application/octet-stream';
-
             return res.status(200).json({
                 isRaw: true, // Signal to client: "This is raw data, you must process it."
                 content: base64Content,
