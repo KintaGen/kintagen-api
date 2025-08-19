@@ -16,6 +16,9 @@ import {
     uploadAndAddSpectrumHandler 
 } from '../controllers/upload.controller.js';
 
+import jobsRouter from './jobs.routes.js';
+
+
 // Handlers for project and NFT management
 import { 
     listProjectsHandler,

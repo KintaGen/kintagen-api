@@ -38,6 +38,10 @@ export async function generateSearchQueries(topic, n = 10) {
     return completion.split('\n').filter(s => s.trim().length > 0).slice(0, n);
 }
 
+
+
+
+
 /**
  * Uses Exa to get search results for a list of queries.
  */
@@ -98,3 +102,5 @@ export async function extractMetadataFromText(text) {
     const jsonString = aiResponseText.substring(jsonStartIndex, jsonEndIndex + 1);
     return JSON.parse(jsonString);
 }
+
+export { getLLMResponse as runMosaiaPrompt, getLLMResponse };
