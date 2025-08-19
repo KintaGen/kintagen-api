@@ -3,55 +3,40 @@ import express from 'express';
 import multer from 'multer';
 
 // --- CONTROLLER IMPORTS ---
-
-// Unified handlers for chat, analysis, and data querying
 import { chatHandler } from '../controllers/chat.controller.js';
 import { nmrAnalysisHandler, ld50AnalysisHandler, gcmsDifferentialHandler,gcmsProfilingHandler } from '../controllers/analysis.controller.js';
 import { queryDataHandler, getDataByIDHandler, listCIDsHandler } from '../controllers/data.controller.js';
-
-// The new, flexible upload handler + legacy handlers
-import { 
-    processAndUploadHandler,
-    uploadAndAddGenomeHandler, 
-    uploadAndAddSpectrumHandler 
+import {
+  processAndUploadHandler,
+  uploadAndAddGenomeHandler,
+  uploadAndAddSpectrumHandler,
 } from '../controllers/upload.controller.js';
-
-import jobsRouter from './jobs.routes.js';
-
-
-// Handlers for project and NFT management
-import { 
-    listProjectsHandler,
-    createProjectHandler,
-    mintProjectNftHandler
+import {
+  listProjectsHandler,
+  createProjectHandler,
+  mintProjectNftHandler,
 } from '../controllers/project.controller.js';
-import { 
-    getNftStoryHandler,
-    addLogEntryHandler
+import {
+  getNftStoryHandler,
+  addLogEntryHandler,
 } from '../controllers/nft.controller.js';
-
-// Handler for fetching raw document content
 import { getDocumentContentHandler } from '../controllers/document.controller.js';
 
-
-// --- ROUTER SETUP ---
+// FIXED: import the actual exported names from prompts.controller
+import {
+  createPromptHandler,
+  getPromptHandler,
+  listPromptsHandler,
+} from '../controllers/prompts.controller.js';
 
 const router = express.Router();
 
-// Multer instance for uploads that need to be temporarily saved to disk for processing (like PDFs)
+// Multer instances
 const uploadToDisk = multer({ dest: 'uploads/' });
-
-// Multer instance for uploads that can be handled directly in memory as a buffer
 const uploadToMemory = multer({ storage: multer.memoryStorage() });
 
-
-// --- API ROUTES ---
-
 // --- Data Ingestion & Processing ---
-// The primary, flexible route for uploading papers and experiments.
 router.post('/upload', uploadToDisk.single('file'), processAndUploadHandler);
-
-// Legacy routes for specific data types that expect a buffer in memory.
 router.post('/upload/genome', uploadToMemory.single('file'), uploadAndAddGenomeHandler);
 router.post('/upload/spectrum', uploadToMemory.single('file'), uploadAndAddSpectrumHandler);
 
@@ -71,7 +56,6 @@ router.get('/data/:type/:cid', getDataByIDHandler);
 router.get('/cids', listCIDsHandler);
 
 // --- Raw Content Fetching ---
-// Fetches a file from FilCDN by CID and returns its parsed text content.
 router.get('/document-content/:cid', getDocumentContentHandler);
 
 // --- Analysis Tools (R Scripts) ---
