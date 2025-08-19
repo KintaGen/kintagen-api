@@ -1,121 +1,124 @@
 // src/queues/worker.js
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { Worker, QueueEvents } from 'bullmq';
 import { connection } from './connection.js';
-
+import { getLLMResponse as runMosaiaPrompt } from '../services/ai.service.js';
 import { runScript } from '../services/analysis.service.js';
-import * as flowService from '../services/flow.service.js';
-import { extractTextFromBuffer } from '../services/pdf.service.js';
-import fetch from 'node-fetch';
-import { getLLMResponse } from '../services/ai.service.js';
+import { RSCRIPT } from '../services/r-binary.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-
+const QUEUE_NAME = 'kintagen';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Queue events (for logs/metrics)
-const events = new QueueEvents('kintagen', { connection });
-events.on('completed', ({ jobId, returnvalue }) => {
-    console.log(`[QUEUE] Job ${jobId} completed. Summary:`, typeof returnvalue === 'string' ? returnvalue.slice(0, 120) : returnvalue);
+const isFakeR = () => process.env.TEST_FAKE_R === 'true';
+
+function log(...args) {
+  console.log('[QUEUE]', ...args);
+}
+
+async function handleSelfTest(job, data) {
+  await job.updateProgress(50);
+  await new Promise(r => setTimeout(r, 20));
+  await job.updateProgress(100);
+  return { ok: true, echo: data ?? null, at: Date.now() };
+}
+
+async function handlePromptLLM(job) {
+  const { system, prompt, temperature, model, simulateFailFor } = job.data || {};
+  if (simulateFailFor && job.attemptsMade < simulateFailFor) {
+    throw new Error(`simulated failure attempt ${job.attemptsMade + 1}/${simulateFailFor}`);
+  }
+  const output = await runMosaiaPrompt({
+    system: system || 'You are helpful.',
+    user: prompt || '',
+    temperature: typeof temperature === 'number' ? temperature : 0.2,
+    model: model || 'mock-or-real',
+  });
+  return { ok: true, output };
+}
+
+async function handleLd50(data) {
+  if (isFakeR()) {
+    return {
+      status: 'success',
+      results: {
+        ld50_estimate: 3.14,
+        standard_error: 0.12,
+        confidence_interval_lower: 2.9,
+        confidence_interval_upper: 3.4,
+      },
+      log: ['FAKE_R: ld50 stub'],
+    };
+  }
+  const script = path.join(__dirname, '..', 'scripts', 'ld50_analysis.R');
+  const out = await runScript(RSCRIPT, [script, data?.dataUrl || ''], {});
+  return JSON.parse(out);
+}
+
+async function handleGcms(data) {
+  if (isFakeR()) {
+    return {
+      status: 'success',
+      results: {
+        stats_table: [{ feature: 'm/z 123.45@5.6min', log2FC: 1.2, p: 0.03 }],
+        pca_plot_b64: 'data:image/png;base64,FAKE',
+        volcano_plot_b64: 'data:image/png;base64,FAKE',
+      },
+      log: ['FAKE_R: gcms stub'],
+    };
+  }
+  const script = path.join(__dirname, '..', 'scripts', 'xcms_analysis.R');
+  const out = await runScript(RSCRIPT, [script, data?.dataPath || '', data?.phenoFile || ''], {});
+  return JSON.parse(out);
+}
+
+async function handleNmr(data) {
+  if (isFakeR()) {
+    return {
+      ok: true,
+      peak_table: [{ ppm: 7.26, area: 1234 }],
+      log: 'FAKE_R: nmr stub',
+    };
+  }
+  const script = path.join(__dirname, '..', 'scripts', 'run_batman.R');
+  const outLog = await runScript(RSCRIPT, [script, data?.dataPath || ''], {});
+  return { ok: true, log: outLog };
+}
+
+const processor = async (job) => {
+  switch (job.name) {
+    case 'self-test':
+      return await handleSelfTest(job, job.data);
+    case 'force-fail':
+      throw new Error('boom');
+    case 'prompt:llm':
+    case 'mosaia-prompt-direct': // alias for older tests
+      return await handlePromptLLM(job);
+    case 'ld50-analyze':
+      return await handleLd50(job.data);
+    case 'gcms-analyze':
+      return await handleGcms(job.data);
+    case 'nmr-analyze':
+      return await handleNmr(job.data);
+    default:
+      throw new Error(`Unknown job name: ${job.name}`);
+  }
+};
+
+const worker = new Worker(QUEUE_NAME, processor, { connection });
+const events = new QueueEvents(QUEUE_NAME, { connection });
+
+events.on('progress', ({ jobId, data }) => log(`${jobId} progress: ${data}`));
+events.on('completed', ({ jobId }, result) => {
+  try {
+    log(`Job ${jobId} completed. Summary:`, result ? JSON.parse(result) : result);
+  } catch {
+    log(`Job ${jobId} completed.`);
+  }
 });
-events.on('failed', ({ jobId, failedReason }) => {
-    console.error(`[QUEUE] Job ${jobId} failed: ${failedReason}`);
-});
+events.on('failed', ({ jobId, failedReason }) => log(`${jobId} failed: ${failedReason}`));
 
-// Helpers to locate R scripts
-const scriptsDir = path.join(path.dirname(__dirname), 'scripts');
-const ld50Script = path.join(scriptsDir, 'ld50_analysis.R');
-const gcmsScript = path.join(scriptsDir, 'xcms_analysis.R');
-const nmrScript = path.join(scriptsDir, 'run_batman.R'); // you already reference this name
+log('Worker online for queue:', QUEUE_NAME);
 
-// Individual job handlers
-async function handleLd50({ dataUrl }) {
-    const out = await runScript('Rscript', [ld50Script, dataUrl || ''], {});
-    // R script already emits JSON string
-    return JSON.parse(out);
-}
-
-
-async function handleMosaiaPromptDirect({ system, user, temperature = 0.2, model }) {
-    const output = await getLLMResponse({ system, user, temperature, model });
-    return { ok: true, system, user, temperature, model: model || null, output };
-}
-
-async function handleGcms({ dataPath, phenoFile }) {
-    const out = await runScript('Rscript', [gcmsScript, dataPath || '', phenoFile || ''], {});
-    return JSON.parse(out);
-}
-
-async function handleNmr({ dataPath }) {
-    const outLog = await runScript('Rscript', [nmrScript, dataPath || ''], {
-        cwd: path.join(path.dirname(__dirname), 'results', `run_${Date.now()}`),
-    });
-    // If your NMR script prints JSON, parse; otherwise return its log.
-    try { return JSON.parse(outLog); } catch { return { status: 'ok', log: outLog }; }
-}
-
-async function handleFlowLog({ nftId, projectId, agent = 'KintaGenApp', action, outputCID }) {
-    // Prefer nftId if provided, else resolve via projectId like your controller does
-    if (!nftId && projectId) {
-        // mimic project lookup you already do in nft.controller.js
-        // To avoid importing db here, let controller pass nftId ideally.
-        throw new Error('Pass nftId directly for queue usage, or enqueue via the provided controller endpoint.');
-    }
-    const sealedTx = await flowService.addLogEntry({
-        nftId, agent, action, outputCID,
-    });
-    return { transactionId: sealedTx.transactionId, nftId };
-}
-
-async function handlePdfExtract({ cid }) {
-    const url = `https://0xcdb8cc9323852ab3bed33f6c54a7e0c15d555353.calibration.filcdn.io/${cid}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`FilCDN fetch failed: ${res.status} ${res.statusText}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    const text = await extractTextFromBuffer(buf);
-    return { cid, chars: text.length, text };
-}
-
-// The worker (single file, multiple job names)
-export const worker = new Worker('kintagen', async (job) => {
-    const { name, data } = job;
-
-    switch (name) {
-        case 'ld50-analyze': return await handleLd50(data);
-        case 'gcms-analyze': return await handleGcms(data);
-        case 'nmr-analyze': return await handleNmr(data);
-        case 'flow-add-log': return await handleFlowLog(data);
-        case 'pdf-extract': return await handlePdfExtract(data);
-        case 'mosaia-prompt-direct': return await handleMosaiaPromptDirect(data);
-        case 'self-test': {
-            await job.updateProgress(50);
-            await new Promise(r => setTimeout(r, 20));
-            await job.updateProgress(100);
-            return { ok: true, echo: data ?? null, at: Date.now() };
-        }
-        case 'force-fail': {
-            throw new Error('boom');
-        }
-
-        // Example: repeatable daily publisher job
-        case 'data-publisher': {
-            // implement tar + upload later; placeholder return for now
-            return { ok: true, note: 'publisher stub' };
-        }
-
-        default:
-            throw new Error(`Unknown job name: ${name}`);
-    }
-}, {
-    connection,
-    // Tune to your machine
-    concurrency: 3,
-});
-
-worker.on('progress', (job, progress) => {
-    console.log(`[QUEUE] ${job.name}#${job.id} progress:`, progress);
-});
-worker.on('failed', (job, err) => {
-    console.error(`[QUEUE] ${job.name}#${job?.id} failed:`, err?.message);
-});
+export default worker;
