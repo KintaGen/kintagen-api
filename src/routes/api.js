@@ -16,6 +16,9 @@ import {
     uploadAndAddSpectrumHandler 
 } from '../controllers/upload.controller.js';
 
+import jobsRouter from './jobs.routes.js';
+
+
 // Handlers for project and NFT management
 import { 
     listProjectsHandler,
@@ -75,6 +78,9 @@ router.get('/document-content/:cid', getDocumentContentHandler);
 router.post('/analyze-nmr', nmrAnalysisHandler);
 router.post('/analyze-ld50', ld50AnalysisHandler);
 router.post('/analyze-gcms', gcmsAnalysisHandler);
+
+router.use('/jobs', jobsRouter);
+
 
 
 export default router;
