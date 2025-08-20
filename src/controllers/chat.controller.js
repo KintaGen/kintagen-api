@@ -1,7 +1,7 @@
 // src/controllers/chat.controller.js
 import { generateSearchQueries, getSearchResults, synthesizeReport } from '../services/ai.service.js';
 
-async function researcher(topic) {
+async function researcher(topic,context) {
     console.log(`Starting research on topic: "${topic}"`);
     const searchQueries = await generateSearchQueries(topic);
     console.log("Generated search queries:", searchQueries);
@@ -14,13 +14,13 @@ async function researcher(topic) {
 
 export async function chatHandler(req, res, next) {
     try {
-        const { messages } = req.body;
+        const { messages,filecoinContext } = req.body;
         if (!messages || !Array.isArray(messages) || messages.length === 0) {
             return res.status(400).json({ error: 'Invalid request: "messages" array is required.' });
         }
         
         const lastUserMessage = messages[messages.length - 1].text;
-        const result = await researcher(`Solve: ${lastUserMessage}`);
+        const result = await researcher(`Solve: ${lastUserMessage}; Context: ${filecoinContext}`);
         
         res.json({ reply: result });
     } catch (error) {

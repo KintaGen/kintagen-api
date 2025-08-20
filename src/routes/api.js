@@ -4,8 +4,17 @@ import multer from 'multer';
 
 // --- CONTROLLER IMPORTS ---
 import { chatHandler } from '../controllers/chat.controller.js';
-import { nmrAnalysisHandler, ld50AnalysisHandler, gcmsAnalysisHandler } from '../controllers/analysis.controller.js';
-import { queryDataHandler, getDataByIDHandler, listCIDsHandler } from '../controllers/data.controller.js';
+import {
+  nmrAnalysisHandler,
+  ld50AnalysisHandler,
+  gcmsDifferentialHandler,
+  gcmsProfilingHandler,
+} from '../controllers/analysis.controller.js';
+import {
+  queryDataHandler,
+  getDataByIDHandler,
+  listCIDsHandler,
+} from '../controllers/data.controller.js';
 import {
   processAndUploadHandler,
   uploadAndAddGenomeHandler,
@@ -22,7 +31,7 @@ import {
 } from '../controllers/nft.controller.js';
 import { getDocumentContentHandler } from '../controllers/document.controller.js';
 
-// FIXED: import the actual exported names from prompts.controller
+// Prompts (BullMQ) — use the actual exported names
 import {
   createPromptHandler,
   getPromptHandler,
@@ -59,9 +68,11 @@ router.get('/cids', listCIDsHandler);
 router.get('/document-content/:cid', getDocumentContentHandler);
 
 // --- Analysis Tools (R Scripts) ---
-router.post('/analyze-nmr', nmrAnalysisHandler);
-router.post('/analyze-ld50', ld50AnalysisHandler);
-router.post('/analyze-gcms', gcmsAnalysisHandler);
+// (use main’s path scheme)
+router.post('/analyze/nmr', nmrAnalysisHandler);
+router.post('/analyze/ld50', ld50AnalysisHandler);
+router.post('/analyze/gcms-differential', gcmsDifferentialHandler);
+router.post('/analyze/gcms-profiling', gcmsProfilingHandler);
 
 // --- Prompts Async Pipeline (BullMQ) ---
 router.post('/prompts', createPromptHandler);
