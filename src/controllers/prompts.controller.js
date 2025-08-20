@@ -16,15 +16,23 @@ function computeIdempotency({ user, key, prompt }) {
   return 'prompt:' + h.digest('hex');
 }
 
-function preview(str, n = 120) {
-  if (typeof str !== 'string') return '';
-  return str.length <= n ? str : str.slice(0, n) + '…';
-}
-
 /**
- * POST /prompts  -> { jobId }
- * Body: { user, prompt, key?, temperature?, model?, simulateFailFor?, idempotencyKey?, useStub?, reqId? }
- * Header alternative: Idempotency-Key: <key>
+ * POST /prompts -> { jobId }
+ * Body:
+ * {
+ *   user: string,
+ *   prompt: string,
+ *   key?: string,
+ *   temperature?: number,
+ *   model?: string,                 // leave undefined to use ai.service default
+ *   simulateFailFor?: number,
+ *   useStub?: boolean,
+ *   idempotencyKey?: string,
+ *   // EXA knobs
+ *   useExa?: boolean,               // default: true if EXA_API_KEY exists
+ *   exaQueryCount?: number,         // default: 6
+ *   exaLinksPerQuery?: number       // default: 5
+ * }
  */
 export async function createPromptHandler(req, res, next) {
   try {
@@ -36,31 +44,34 @@ export async function createPromptHandler(req, res, next) {
 
     const key = body.key ?? 'default';
     const temperature = body.temperature ?? 0.2;
-
-    // model: let ai.service decide default if not provided
-    const model = body.model || '(default from ai.service)';
-
+    const model = body.model ?? undefined; // let ai.service choose its default
     const simulateFailFor = Number.isFinite(body.simulateFailFor)
       ? Number(body.simulateFailFor)
       : undefined;
 
-    // allow header, body, or computed idempotency
     const idem =
       body.idempotencyKey ||
-      req.get?.('Idempotency-Key') ||
+      req.get('Idempotency-Key') ||
       computeIdempotency({ user, key, prompt });
 
-    // allow forcing the worker to stub the LLM (no external calls)
     const useStub =
       body.useStub === true ||
-      req.query?.stub === '1' ||
+      req.query.stub === '1' ||
       process.env.TEST_FAKE_MOSAIA === '1';
 
-    const reqId =
-      body.reqId ||
-      req.get?.('X-Request-Id') ||
-      crypto.randomUUID?.() ||
-      String(Date.now());
+    // EXA toggles
+    const useExa =
+      body.useExa !== undefined
+        ? !!body.useExa
+        : !!process.env.EXA_API_KEY; // default ON when the key exists
+
+    const exaQueryCount = Number.isFinite(body.exaQueryCount)
+      ? Number(body.exaQueryCount)
+      : 6;
+
+    const exaLinksPerQuery = Number.isFinite(body.exaLinksPerQuery)
+      ? Number(body.exaLinksPerQuery)
+      : 5;
 
     const jobData = {
       kind: 'llm',
@@ -68,23 +79,27 @@ export async function createPromptHandler(req, res, next) {
       key,
       prompt,
       temperature,
-      model: body.model, // pass-through; worker will default if falsy
+      model,
       simulateFailFor,
       useStub,
-      reqId,
+      // EXA options
+      useExa,
+      exaQueryCount,
+      exaLinksPerQuery,
     };
 
-    // Helpful enqueue log
     console.log('[API /prompts] enqueue', {
       user,
       key,
-      model,
+      model: model || '(default from ai.service)',
       temperature,
       simulateFailFor,
       useStub,
+      useExa,
+      exaQueryCount,
+      exaLinksPerQuery,
       idem,
-      reqId,
-      promptPreview: preview(prompt),
+      promptPreview: String(prompt).slice(0, 120),
     });
 
     let job;
@@ -104,17 +119,20 @@ export async function createPromptHandler(req, res, next) {
       }
     }
 
-    console.log('[API /prompts] enqueued', { jobId: job.id, name: job.name, reqId });
-    // Tests expect 200; 202 would also be fine in real APIs
-    return res.status(200).json({ jobId: job.id });
+    return res.status(202).json({ jobId: job.id });
   } catch (err) {
     next(err);
   }
 }
 
 /**
- * GET /prompts/:id  -> { status, result, error, ... }
- * Also returns a "text" alias of result.output for UI convenience.
+ * GET /prompts/:id
+ * Normalizes to:
+ *  {
+ *    id, name, status,
+ *    result: { reply }    // when completed
+ *    error                 // when failed
+ *  }
  */
 export async function getPromptHandler(req, res, next) {
   try {
@@ -123,100 +141,68 @@ export async function getPromptHandler(req, res, next) {
     if (!job) return res.status(404).json({ error: 'job not found' });
 
     const state = await job.getState(); // waiting | active | completed | failed | delayed
-    const result = job.returnvalue ?? null;
-    const error = state === 'failed' ? (job.failedReason || null) : null;
-
-    const text =
-      result && typeof result.output === 'string' && result.output.trim()
-        ? result.output
-        : null;
-
-    if (state === 'completed') {
-      console.log('[API /prompts/:id] completed', {
-        id: job.id,
-        reqId: job.data?.reqId,
-        outputLen: text ? text.length : 0,
-        outputPreview: preview(text || ''),
-      });
-    } else if (state === 'failed') {
-      console.log('[API /prompts/:id] failed', {
-        id: job.id,
-        reqId: job.data?.reqId,
-        error: String(error || ''),
-      });
-    } else {
-      console.log('[API /prompts/:id] pending', {
-        id: job.id,
-        reqId: job.data?.reqId,
-        state,
-        attemptsMade: job.attemptsMade,
-        progress: job.progress,
-      });
-    }
-
-    res.json({
+    const payload = {
       id: job.id,
       name: job.name,
       status: state,
-      result,          // { ok: true, output: '...' } from the worker
-      error,           // string if failed
-      text,            // alias for UI convenience
-      attemptsMade: job.attemptsMade,
-      progress: job.progress ?? 0,
-      createdAt: job.timestamp,
-      finishedOn: job.finishedOn,
-      processedOn: job.processedOn,
+      state,
+    };
+
+    if (state === 'completed') {
+      const out = job.returnvalue;
+      // normalize shape for the UI
+      payload.result = out?.output
+        ? { reply: out.output }
+        : out?.result
+        ? out.result
+        : { reply: '' };
+    } else if (state === 'failed') {
+      payload.error = job.failedReason || 'Job failed';
+    }
+
+    console.log('[API /prompts/:id]', state, {
+      id: job.id,
+      outputLen: job.returnvalue?.output?.length || 0,
+      outputPreview: String(job.returnvalue?.output || '').slice(0, 120),
     });
+
+    res.json(payload);
   } catch (err) {
     next(err);
   }
 }
 
 /**
- * GET /prompts?user=...&limit=10 -> { items, total }
+ * GET /prompts?user=u1&limit=50
+ * Returns:
+ *  { items: [{ id, prompt, status }] }
  */
 export async function listPromptsHandler(req, res, next) {
   try {
-    const user = req.query.user || null;
-    const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 20));
-    const start = 0;
-    const end = limit - 1;
+    const user = req.query.user || undefined;
+    const limit = Math.min(parseInt(req.query.limit || '25', 10), 100);
 
-    // Grab recent jobs across states
-    const jobs = await queue.getJobs(
-      ['completed', 'failed', 'active', 'waiting', 'delayed'],
-      start,
-      end,
-      true
-    );
+    // Pull a batch then filter in-memory (cheap and simple)
+    const types = ['completed', 'failed', 'delayed', 'waiting', 'active'];
+    const jobs = await queue.getJobs(types, 0, 300, true); // max 300 recent
 
     const filtered = user
       ? jobs.filter((j) => j?.data?.user === user)
       : jobs;
 
-    const items = await Promise.all(
-      filtered.map(async (j) => {
-        const st = await j.getState();
-        return {
-          id: j.id,
-          name: j.name,
-          user: j.data?.user,
-          status: st,
-          createdAt: j.timestamp,
-          finishedOn: j.finishedOn,
-          result: j.returnvalue ?? null,
-          error: st === 'failed' ? (j.failedReason || null) : null,
-        };
-      })
-    );
+    // newest first
+    filtered.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    const head = filtered.slice(0, limit);
 
-    res.json({ items, total: items.length });
+    const states = await Promise.all(head.map((j) => j.getState()));
+    const items = head.map((j, i) => ({
+      id: String(j.id),
+      prompt: String(j.data?.prompt || ''),
+      status: states[i],
+    }));
+
+    res.json({ items });
   } catch (err) {
     next(err);
   }
 }
-
-/* Back-compat aliases for src/routes/prompts.router.js used in tests */
-export { createPromptHandler as postPrompt };
-export { getPromptHandler as getPromptById };
-export { listPromptsHandler as listPrompts };
