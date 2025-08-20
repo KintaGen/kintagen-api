@@ -2,7 +2,7 @@
 import express from 'express';
 import multer from 'multer';
 
-// --- CONTROLLER IMPORTS ---
+// --- CONTROLLERS ---
 import { chatHandler } from '../controllers/chat.controller.js';
 import { nmrAnalysisHandler, ld50AnalysisHandler, gcmsDifferentialHandler,gcmsProfilingHandler } from '../controllers/analysis.controller.js';
 import { queryDataHandler, getDataByIDHandler, listCIDsHandler } from '../controllers/data.controller.js';
