@@ -66,10 +66,16 @@ export async function getJobStatus(req, res, next) {
     const job = await q.getJob(id);
     if (!job) return res.status(404).json({ error: 'job not found' });
 
-    const [state, logs] = await Promise.all([
-      job.getState(),
-      job.getLogs(0, 200),
-    ]);
+    const state = await job.getState();
+
+    // BullMQ v5 logs
+    let logsArr = [];
+    try {
+      const qLogs = await q.getJobLogs(job.id);
+      logsArr = qLogs?.logs || [];
+    } catch {
+      logsArr = [];
+    }
 
     res.json({
       id: job.id,
@@ -79,7 +85,7 @@ export async function getJobStatus(req, res, next) {
       attemptsMade: job.attemptsMade,
       failedReason: job.failedReason || null,
       returnvalue: job.returnvalue || null,
-      logs: logs?.logs || [],
+      logs: logsArr,
       timestamp: job.timestamp,
       finishedOn: job.finishedOn,
       processedOn: job.processedOn,
