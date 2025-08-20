@@ -45,6 +45,61 @@ export const worker = new Worker(
     log('received', job.name, job.id);
 
     switch (job.name) {
+      // inside the switch(job.name) in src/queues/worker.js
+      case 'research-chat': {
+        // Verbose, mock-friendly processor that always returns { reply }
+        try {
+          log('[research-chat] START', { id: job.id });
+          const topic = job.data?.topic || '';
+          log('[research-chat] topic:', topic);
+
+          await job.updateProgress(5);
+
+          // Import AI service lazily (MOCK_MODE makes these safe & fast)
+          const ai = await import('../services/ai.service.js');
+
+          await job.updateProgress(10);
+          log('[research-chat] generating queries…');
+          const queries = await ai.generateSearchQueries(topic);
+          log('[research-chat] queries generated:', queries?.length ?? 0);
+          if (Array.isArray(queries)) {
+            for (let i = 0; i < Math.min(3, queries.length); i++) {
+              log(`[research-chat] q${i + 1}:`, queries[i]);
+            }
+          }
+
+          await job.updateProgress(40);
+          log('[research-chat] fetching search results…');
+          const results = await ai.getSearchResults(queries);
+          log('[research-chat] results received:', results?.length ?? 0);
+
+          await job.updateProgress(70);
+          log('[research-chat] synthesizing report…');
+          const reply = await ai.synthesizeReport(topic, results);
+
+          const replyPreview = String(reply || '').slice(0, 200).replace(/\s+/g, ' ');
+          log('[research-chat] reply preview:', replyPreview || '(empty)');
+
+          await job.updateProgress(100);
+          log('[research-chat] DONE', { id: job.id });
+
+          // ⬇️ ALWAYS return a reply so the UI can render something
+          return {
+            reply: reply || 'No content generated (empty mock reply).',
+            meta: {
+              queryCount: queries?.length ?? 0,
+              resultCount: results?.length ?? 0,
+              at: Date.now(),
+            },
+          };
+        } catch (err) {
+          log('[research-chat] ERROR:', err?.stack || err?.message || String(err));
+          // Let BullMQ mark the job as failed
+          throw err;
+        }
+      }
+
+
       case 'self-test':
         return handleSelfTest(job, job.data);
 
@@ -82,17 +137,17 @@ export const worker = new Worker(
             status: 'success',
             results: isDifferential
               ? {
-                  stats_table: [{ feature: 'm/z 123.45@5.6min', log2FC: 1.2, pvalue: 0.03 }],
-                  volcano_plot_b64: null,
-                  pca_plot_b64: null,
-                  metabolite_map_b64: null,
-                }
+                stats_table: [{ feature: 'm/z 123.45@5.6min', log2FC: 1.2, pvalue: 0.03 }],
+                volcano_plot_b64: null,
+                pca_plot_b64: null,
+                metabolite_map_b64: null,
+              }
               : {
-                  feature_table: [{ feature_id: 'F1', mz: 123.4567, rt: 345.67 }],
-                  bpc_plot_b64: null,
-                  top_spectra_plot_b64: null,
-                  metabolite_map_b64: null,
-                },
+                feature_table: [{ feature_id: 'F1', mz: 123.4567, rt: 345.67 }],
+                bpc_plot_b64: null,
+                top_spectra_plot_b64: null,
+                metabolite_map_b64: null,
+              },
             log: ['FAKE_R: gcms stub'],
           }),
         );
