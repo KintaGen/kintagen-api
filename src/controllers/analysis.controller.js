@@ -1,106 +1,137 @@
 // src/controllers/analysis.controller.js
-import path from 'path';
-import fs from 'fs';
-import { runScript } from '../services/analysis.service.js';
-import { fileURLToPath } from 'url';
+import { Queue, QueueEvents, Job } from 'bullmq';
+import { connection } from '../queues/connection.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const QUEUE_NAME = 'kintagen';
+const queue = new Queue(QUEUE_NAME, { connection });
+const events = new QueueEvents(QUEUE_NAME, { connection });
 
-export async function nmrAnalysisHandler(req, res, next) {
-    const { dataPath } = req.body;
-    if (!dataPath) return res.status(400).json({ success: false, error: 'Request body must include "dataPath".' });
+// Small helper: enqueue and optionally wait for completion
+async function enqueueAndMaybeWait(name, payload, { waitMs, jobId }) {
+  const job = await queue.add(name, payload, {
+    jobId,
+    removeOnComplete: true,
+    removeOnFail: 500,
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 1000 },
+  });
 
-    const r_script_path = path.join(path.dirname(__dirname), 'scripts', 'run_batman.R');
-    const outputDir = path.join(path.dirname(__dirname), 'results', `run_${Date.now()}`);
+  if (!waitMs) return { enqueued: true, jobId: job.id };
 
-    try {
-        fs.mkdirSync(outputDir, { recursive: true });
-        const scriptOutputLog = await runScript('Rscript', [r_script_path, dataPath], { cwd: outputDir });
-        res.json({
-            success: true,
-            message: 'BATMAN analysis completed successfully.',
-            outputDirectory: outputDir,
-            log: scriptOutputLog,
-        });
-    } catch (error) {
-        error.outputDirectory = outputDir; // Add context for debugging
-        next(error);
-    }
+  // Wait for worker result (uses QueueEvents)
+  try {
+    await events.waitUntilReady();
+    const rv = await job.waitUntilFinished(events, waitMs);
+    return { enqueued: true, jobId: job.id, result: rv, completed: true };
+  } catch (err) {
+    // If it times out, return 202 + jobId so the client can poll
+    return { enqueued: true, jobId: job.id, completed: false, error: String(err) };
+  }
 }
 
-export async function ld50AnalysisHandler(req, res, next) {
-    const { dataUrl } = req.body;
+/**
+ * IMPORTANT: Your worker already expects the following:
+ * - LD50: payload { dataUrl?: string, ... } (R script consumes a URL)  -> job: 'ld50-analyze'
+ * - GCMS: payload { dataPath?: string, phenoFile?: string, ... }      -> job: 'gcms-analyze'
+ * - NMR : payload { dataPath?: string, ... }                           -> job: 'nmr-analyze'
+ * If your UI sends CIDs instead of paths, either pre-resolve to local paths here
+ * or use the worker tweak below to accept {dataCid, phenoCid}.
+ */
 
-    const r_script_path = path.join(path.dirname(__dirname), 'scripts', 'ld50_analysis.R');
-    
-    try {
-        const scriptOutputJson = await runScript('Rscript', [r_script_path, dataUrl], {});
-        const results = JSON.parse(scriptOutputJson);
-        if (results.status === 'success') {
-            res.json(results);
-        } else {
-            console.error('LD50 R script reported an internal error:', results.error);
-            res.status(500).json(results);
-        }
-    } catch (error) {
-        next(error);
-    }
+export async function ld50AnalysisHandler(req, res) {
+  const { async: isAsyncFlag, timeoutMs, ...payload } = req.body ?? {};
+  const jobId = `ld50-analyze:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+
+  // If async flag true (or query ?async=1), return immediately with jobId.
+  const doAsync = isAsyncFlag === true || req.query.async === '1';
+
+  const out = await enqueueAndMaybeWait('ld50-analyze', payload, {
+    jobId,
+    waitMs: doAsync ? 0 : Number(timeoutMs) || 120_000, // default 2 min server-side wait
+  });
+
+  if (doAsync) return res.json({ jobId: out.jobId });
+
+  // sync path (UI unchanged): if we timed out waiting, return 202 to allow UI to optionally poll
+  if (!out.completed) return res.status(202).json({ jobId: out.jobId, status: 'processing' });
+
+  // Worker already returns the synchronous shape -> pass straight through
+  return res.json(out.result);
 }
 
-export async function gcmsAnalysisHandler(req, res, next) {
-    const { dataPath } = req.body;
-    const r_script_path = path.join(path.dirname(__dirname), 'scripts', 'xcms_analysis.R');
-    const args = [r_script_path, dataPath];
+export async function gcmsDifferentialHandler(req, res) {
+  const { async: isAsyncFlag, timeoutMs, ...payload } = req.body ?? {};
+  const jobId = `gcms-analyze:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 
-    try {
-        const scriptOutputJson = await runScript('Rscript', args);
-        const results = JSON.parse(scriptOutputJson);
-        if (results.status === 'success') {
-            res.json(results);
-        } else {
-            console.error('R script reported an internal error:', results.error);
-            res.status(500).json(results);
-        }
-    } catch (error) {
-        next(error);
-    }
-}
-export async function gcmsDifferentialHandler(req, res, next) {
-    const { dataPath } = req.body;
-    const r_script_path = path.join(path.dirname(__dirname), 'scripts', 'xcms_analysis.R');
-    const args = [r_script_path, dataPath];
-    try {
-        console.log('[API] Running GC-MS Differential Analysis...');
-        const scriptOutputJson = await runScript('Rscript', args);
-        const results = JSON.parse(scriptOutputJson);
-        if (results.status === 'error') throw new Error(results.error);
-        res.json(results);
-    } catch (error) {
-        console.error('[API ERROR] in gcmsDifferentialHandler:', error);
-        next(error);
-    }
+  const doAsync = isAsyncFlag === true || req.query.async === '1';
+
+  // Differential typically sets phenoFile / phenoCid; we just pass through
+  const out = await enqueueAndMaybeWait('gcms-analyze', payload, {
+    jobId,
+    waitMs: doAsync ? 0 : Number(timeoutMs) || 180_000, // GCMS can take longer
+  });
+
+  if (doAsync) return res.json({ jobId: out.jobId });
+  if (!out.completed) return res.status(202).json({ jobId: out.jobId, status: 'processing' });
+  return res.json(out.result);
 }
 
-// --- NEW HANDLER for profiling analysis ---
-export async function gcmsProfilingHandler(req, res, next) {
-    const { dataPath } = req.body;
-    const r_script_path = path.join(path.dirname(__dirname), 'scripts', 'xcms_profiling.R');
-    const args = [r_script_path, dataPath];
-    
-    // Note: The robust solution involves downloading and unzipping the dataCid first.
-    // For now, we are assuming the R script can handle a URL to a directory if needed,
-    // or that you will implement the unzip logic here later.
+export async function gcmsProfilingHandler(req, res) {
+  const { async: isAsyncFlag, timeoutMs, ...payload } = req.body ?? {};
+  const jobId = `gcms-analyze:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 
-    try {
-        console.log('[API] Running GC-MS Profiling Analysis...');
-        const scriptOutputJson = await runScript('Rscript', args);
-        console.log(scriptOutputJson)
-        const results = JSON.parse(scriptOutputJson);
-        if (results.status === 'error') throw new Error(results.error);
-        res.json(results);
-    } catch (error) {
-        console.error('[API ERROR] in gcmsProfilingHandler:', error);
-        next(error);
+  const doAsync = isAsyncFlag === true || req.query.async === '1';
+
+  // Profiling usually has no pheno file → worker will handle branch
+  const out = await enqueueAndMaybeWait('gcms-analyze', payload, {
+    jobId,
+    waitMs: doAsync ? 0 : Number(timeoutMs) || 180_000,
+  });
+
+  if (doAsync) return res.json({ jobId: out.jobId });
+  if (!out.completed) return res.status(202).json({ jobId: out.jobId, status: 'processing' });
+  return res.json(out.result);
+}
+
+export async function nmrAnalysisHandler(req, res) {
+  const { async: isAsyncFlag, timeoutMs, ...payload } = req.body ?? {};
+  const jobId = `nmr-analyze:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+
+  const doAsync = isAsyncFlag === true || req.query.async === '1';
+
+  const out = await enqueueAndMaybeWait('nmr-analyze', payload, {
+    jobId,
+    waitMs: doAsync ? 0 : Number(timeoutMs) || 120_000,
+  });
+
+  if (doAsync) return res.json({ jobId: out.jobId });
+  if (!out.completed) return res.status(202).json({ jobId: out.jobId, status: 'processing' });
+  return res.json(out.result);
+}
+
+/**
+ * GET /api/analyze/jobs/:id
+ * Lets the UI poll when you choose async mode.
+ * Returns the exact worker returnvalue on completion (same as your old sync payload).
+ */
+export async function getAnalysisJobHandler(req, res) {
+  try {
+    const { id } = req.params;
+    const job = await Job.fromId(queue, id);
+    if (!job) return res.status(404).json({ status: 'error', error: 'Job not found' });
+
+    const state = await job.getState();
+    if (state === 'completed') return res.json(job.returnvalue);
+    if (state === 'failed') {
+      return res.json({
+        status: 'error',
+        error: job.failedReason || 'Job failed',
+        log: job.stacktrace || [],
+        results: null,
+      });
     }
+    return res.json({ status: 'processing' });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', error: String(err?.message || err) });
+  }
 }

@@ -2,19 +2,16 @@
 import express from 'express';
 import multer from 'multer';
 
-// --- CONTROLLER IMPORTS ---
+// --- CONTROLLERS ---
 import { chatHandler } from '../controllers/chat.controller.js';
 import {
   nmrAnalysisHandler,
   ld50AnalysisHandler,
   gcmsDifferentialHandler,
   gcmsProfilingHandler,
+  getAnalysisJobHandler,
 } from '../controllers/analysis.controller.js';
-import {
-  queryDataHandler,
-  getDataByIDHandler,
-  listCIDsHandler,
-} from '../controllers/data.controller.js';
+import { queryDataHandler, getDataByIDHandler, listCIDsHandler } from '../controllers/data.controller.js';
 import {
   processAndUploadHandler,
   uploadAndAddGenomeHandler,
@@ -31,7 +28,7 @@ import {
 } from '../controllers/nft.controller.js';
 import { getDocumentContentHandler } from '../controllers/document.controller.js';
 
-// Prompts (BullMQ) — use the actual exported names
+// Prompts (BullMQ) — uses your worker LLM logic
 import {
   createPromptHandler,
   getPromptHandler,
@@ -67,12 +64,14 @@ router.get('/cids', listCIDsHandler);
 // --- Raw Content Fetching ---
 router.get('/document-content/:cid', getDocumentContentHandler);
 
-// --- Analysis Tools (R Scripts) ---
-// (use main’s path scheme)
+// --- Analysis (async-first; sync-compatible by waiting for result) ---
 router.post('/analyze/nmr', nmrAnalysisHandler);
 router.post('/analyze/ld50', ld50AnalysisHandler);
 router.post('/analyze/gcms-differential', gcmsDifferentialHandler);
 router.post('/analyze/gcms-profiling', gcmsProfilingHandler);
+
+// Polling endpoint for async analysis jobs
+router.get('/analyze/jobs/:id', getAnalysisJobHandler);
 
 // --- Prompts Async Pipeline (BullMQ) ---
 router.post('/prompts', createPromptHandler);
