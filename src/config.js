@@ -1,36 +1,39 @@
 // src/config.js
-import 'dotenv/config'; // Use this for ESM
+import 'dotenv/config';
 import { RPC_URLS } from '@filoz/synapse-sdk';
 
+const isTrueish = (v) => ['1', 'true', 'yes', 'on'].includes(String(v ?? '').toLowerCase());
+const MOCK_MODE = isTrueish(process.env.MOCK_MODE);
+
 const config = {
-  port: process.env.PORT || 3001,
+  port: Number(process.env.PORT || 3001),
+  mockMode: MOCK_MODE,
   db: {
-    connectionString: process.env.POSTGRES_DSN,
+    connectionString: process.env.POSTGRES_DSN || '',
   },
   synapse: {
-    privateKey: process.env.SYNAPSE_PRIVATE_KEY,
+    privateKey: process.env.SYNAPSE_PRIVATE_KEY || '',
     network: process.env.SYNAPSE_NETWORK || 'calibration',
-    rpcUrl: process.env.SYNAPSE_RPC_URL,
+    rpcUrl: process.env.SYNAPSE_RPC_URL || '',
   },
 };
 
-// --- Validation ---
-if (!config.db.connectionString) {
-  throw new Error("Missing required environment variable: POSTGRES_DSN");
-}
-if (!config.synapse.privateKey) {
-  throw new Error("Missing required environment variable: SYNAPSE_PRIVATE_KEY");
-}
-if (config.synapse.privateKey.length !== 66) {
-    throw new Error("Invalid SYNAPSE_PRIVATE_KEY format. Must be a 66-character hex string (e.g., 0x...).");
-}
-if (!config.synapse.rpcUrl) {
-    // Set default RPC if not provided
-    console.warn(`SYNAPSE_RPC_URL not set, using default for ${config.synapse.network}.`);
+if (!MOCK_MODE) {
+  if (!config.db.connectionString) {
+    throw new Error('Missing required environment variable: POSTGRES_DSN');
+  }
+  if (!config.synapse.privateKey) {
+    throw new Error('Missing required environment variable: SYNAPSE_PRIVATE_KEY');
+  }
+  if (config.synapse.privateKey.length !== 66) {
+    throw new Error('Invalid SYNAPSE_PRIVATE_KEY format. Must be 66-char hex (0x...)');
+  }
+  if (!config.synapse.rpcUrl) {
     config.synapse.rpcUrl = RPC_URLS[config.synapse.network]?.http;
     if (!config.synapse.rpcUrl) {
-        throw new Error(`Invalid SYNAPSE_NETWORK: ${config.synapse.network}. Cannot find default RPC URL.`);
+      throw new Error(`Invalid SYNAPSE_NETWORK: ${config.synapse.network}.`);
     }
+  }
 }
 
 export default config;
