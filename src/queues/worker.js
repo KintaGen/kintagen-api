@@ -6,7 +6,18 @@ import { runScript } from '../services/analysis.service.js';
 import { RSCRIPT } from '../services/r-binary.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { generateSearchQueries, getSearchResults, synthesizeReport } from '../services/ai.service.js';
 
+async function researcher(topic,context) {
+    console.log(`Starting research on topic: "${topic}"`);
+    const searchQueries = await generateSearchQueries(topic);
+    console.log("Generated search queries:", searchQueries);
+    const searchResults = await getSearchResults(searchQueries);
+    console.log(`Found ${searchResults.length} search results.`);
+    console.log("Synthesizing report...");
+    const report = await synthesizeReport(topic, searchResults);
+    return report;
+}
 const QUEUE_NAME = 'kintagen';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -71,7 +82,7 @@ async function handlePromptLLM(job) {
   if (model) payload.model = model;
 
   try {
-    const output = await runMosaiaPrompt(payload);
+    const output = await researcher(prompt);
     const trimmed = (output ?? '').trim();
     if (!trimmed) {
       warn('PROMPT empty LLM response', {
