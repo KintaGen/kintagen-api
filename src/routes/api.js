@@ -28,13 +28,6 @@ import {
 } from '../controllers/nft.controller.js';
 import { getDocumentContentHandler } from '../controllers/document.controller.js';
 
-// Prompts (BullMQ) — uses your worker LLM logic
-import {
-  createPromptHandler,
-  getPromptHandler,
-  listPromptsHandler,
-} from '../controllers/prompts.controller.js';
-
 const router = express.Router();
 
 // Multer instances
@@ -72,10 +65,5 @@ router.post('/analyze/gcms-profiling', gcmsProfilingHandler);
 
 // Polling endpoint for async analysis jobs
 router.get('/analyze/jobs/:id', getAnalysisJobHandler);
-
-// --- Prompts Async Pipeline (BullMQ) ---
-router.post('/prompts', createPromptHandler);
-router.get('/prompts/:id', getPromptHandler);
-router.get('/prompts', listPromptsHandler);
 
 export default router;
