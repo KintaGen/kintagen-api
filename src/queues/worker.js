@@ -49,12 +49,14 @@ export const worker = new Worker(
         try {
           log('[research-chat] START', { id: job.id });
           const topic = job.data?.topic || '';
+          const knowledgeBase = job.data?.knowledgeBase;
+          const prompt = `Solve: ${topic}; Context: ${knowledgeBase}`
           log('[research-chat] topic:', topic);
           await job.updateProgress(5);
           const ai = await import('../services/ai.service.js');
           await job.updateProgress(10);
           log('[research-chat] generating queries…');
-          const queries = await ai.generateSearchQueries(topic);
+          const queries = await ai.generateSearchQueries(prompt);
           log('[research-chat] queries generated:', queries?.length ?? 0);
           if (Array.isArray(queries)) {
             for (let i = 0; i < Math.min(3, queries.length); i++) {
@@ -67,7 +69,7 @@ export const worker = new Worker(
           log('[research-chat] results received:', results?.length ?? 0);
           await job.updateProgress(70);
           log('[research-chat] synthesizing report…');
-          const reply = await ai.synthesizeReport(topic, results);
+          const reply = await ai.synthesizeReport(prompt, results);
           const replyPreview = String(reply || '').slice(0, 200).replace(/\s+/g, ' ');
           log('[research-chat] reply preview:', replyPreview || '(empty)');
           await job.updateProgress(100);
