@@ -5,126 +5,73 @@ import * as aiService from '../services/ai.service.js';
 import * as pdfService from '../services/pdf.service.js';
 import fs from 'fs';
 
+
+// WORKERS
+import { Queue, QueueEvents } from 'bullmq';
+import { connection } from '../queues/connection.js';
+
+
 /**
  * The main, flexible handler for processing and uploading files.
  * It categorizes data based on the 'dataType' parameter from the request.
  */
 export async function processAndUploadHandler(req, res, next) {
-    const { 
-        projectId, 
-        dataType, 
-        title: manualTitle, 
-        isEncrypted,
-        litTokenId, // Capture the Lit Token ID from the request
-    } = req.body;
-    
-    const isEncryptedBool = isEncrypted === 'true';
-
-    if (!req.file || !dataType) {
-        return res.status(400).json({ error: 'A file and data type are required.' });
-    }
-
-    const tempFilePath = req.file.path;
-
     try {
-        console.log(`[API] Processing ${dataType} for project ${projectId || 'General'}. Encrypted: ${isEncryptedBool}`);
-        
-        const fileBuffer = fs.readFileSync(tempFilePath);
-        const uploadResult = await uploadData(fileBuffer);
-        const commP = uploadResult.commp;
-
-        // This object now holds all metadata that will be returned
-        let responseMetadata = {
-            cid: commP,
-            projectId: projectId ? Number(projectId) : null,
-            title: '',
-            isEncrypted: isEncryptedBool,
-            litTokenId: litTokenId || null,
-        };
-
-        if (dataType === 'paper') {
-            if (isEncryptedBool) {
-                console.log('[API] File is encrypted. Saving with filename as title.');
-                responseMetadata.title = req.file.originalname;
-
-                // --- MODIFIED: Insert encryption metadata ---
-                await query(
-                    `INSERT INTO paper (cid, title, project_id, is_encrypted, lit_token_id) 
-                     VALUES ($1, $2, $3, $4, $5) ON CONFLICT (cid) DO NOTHING`,
-                    [commP, responseMetadata.title, responseMetadata.projectId, isEncryptedBool, responseMetadata.litTokenId]
-                );
-
-            } else { // Handle unencrypted papers (PDF or text)
-                let text = '';
-                if (req.file.mimetype === 'application/pdf') {
-                    console.log('[API] File is a PDF. Parsing text...');
-                    text = await pdfService.extractTextFromBuffer(fileBuffer);
-                } else if (req.file.mimetype.startsWith('text/')) {
-                    console.log('[API] File is a plain text file.');
-                    text = fileBuffer.toString('utf-8');
-                }
-
-                if (text) {
-                    console.log('[API] Running AI metadata extraction...');
-                    const aiMeta = await aiService.extractMetadataFromText(text);
-                    responseMetadata = { ...responseMetadata, ...aiMeta, title: aiMeta.title };
-                    
-                    await query(
-                        `INSERT INTO paper (cid, title, journal, year, keywords, authors, project_id, is_encrypted, lit_token_id) 
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (cid) DO NOTHING`,
-                        [commP, aiMeta.title, aiMeta.journal, aiMeta.year, aiMeta.keywords, aiMeta.authors, responseMetadata.projectId, isEncryptedBool, responseMetadata.litTokenId]
-                    );
-                } else {
-                    console.log(`[API] Unencrypted file type '${req.file.mimetype}' not parsable. Saving with filename as title.`);
-                    responseMetadata.title = req.file.originalname;
-                    await query(
-                        `INSERT INTO paper (cid, title, project_id, is_encrypted, lit_token_id) 
-                         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (cid) DO NOTHING`,
-                        [commP, responseMetadata.title, responseMetadata.projectId, isEncryptedBool, responseMetadata.litTokenId]
-                    );
-                }
-            }
-            console.log(`[DB] Saved paper metadata for CommP: ${commP}`);
-
-        } else if (dataType === 'experiment' || dataType === 'analysis') {
-            if (!manualTitle) throw new Error(`A title is required for ${dataType} data.`);
-            responseMetadata.title = manualTitle;
-            const targetTable = dataType;
-
-            // --- MODIFIED: Insert encryption metadata for experiments and analyses ---
-            await query(
-                `INSERT INTO ${targetTable} (cid, title, project_id, is_encrypted, lit_token_id) 
-                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (cid) DO NOTHING`,
-                [commP, responseMetadata.title, responseMetadata.projectId, isEncryptedBool, responseMetadata.litTokenId]
-            );
-            console.log(`[DB] Saved ${dataType} data for CommP: ${commP}`);
-
-        } else {
-            return res.status(200).json({
-                rootCID: commP
-            });
-        }
-        
-        // Return a unified response containing the new metadata
-        return res.status(200).json({
-            message: `${dataType.charAt(0).toUpperCase() + dataType.slice(1)} uploaded successfully!`,
-            rootCID: commP,
-            title: responseMetadata.title,
-            projectId: responseMetadata.projectId,
-            isEncrypted: isEncryptedBool,
-            litTokenId: responseMetadata.litTokenId,
-        });
-
-    } catch (error) {
-        console.error(`[API ERROR] in processAndUploadHandler:`, error);
-        next(error);
-    } finally {
-        fs.unlink(tempFilePath, (err) => {
-            if (err) console.error("Error deleting temp file:", err);
-        });
+      const {
+        projectId,
+        dataType,
+        title: manualTitle,
+        isEncrypted,
+        litTokenId,
+        async: isAsyncFlag,
+        timeoutMs,
+      } = req.body ?? {};
+  
+      if (!req.file || !dataType) {
+        return res.status(400).json({ error: 'A file and data type are required.' });
+      }
+  
+      const doAsync = isAsyncFlag === true || req.query.async === '1';
+      const q = new Queue('kintagen', { connection });
+      const qe = new QueueEvents('kintagen', { connection });
+      await qe.waitUntilReady();
+  
+      const payload = {
+        filePath: req.file.path,
+        originalname: req.file.originalname,
+        mimetype: req.file.mimetype,
+        size: req.file.size,
+        dataType,
+        projectId: projectId != null && projectId !== '' ? Number(projectId) : null,
+        manualTitle: manualTitle || '',
+        isEncrypted: String(isEncrypted) === 'true',
+        litTokenId: litTokenId || null,
+      };
+  
+      const job = await q.add('upload-file', payload, {
+        removeOnComplete: { age: 3600, count: 1000 },
+        removeOnFail: { age: 24 * 3600 },
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 2000 },
+      });
+  
+      if (doAsync) {
+        return res.status(202).json({ jobId: job.id });
+      }
+  
+      // Synchronous wait (optional)
+      const wait = Number(timeoutMs) || 180_000;
+      try {
+        const result = await job.waitUntilFinished(qe, wait);
+        return res.status(200).json(result);
+      } catch {
+        return res.status(202).json({ jobId: job.id, status: 'processing' });
+      }
+    } catch (err) {
+      next(err);
     }
-}
-
+  }
+  
 /**
  * A more generic handler that just uploads a file and adds its CID to the database.
  */
