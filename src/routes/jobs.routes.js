@@ -14,7 +14,7 @@ router.post('/nmr',         enqueueNmr);
 router.post('/flow-log',    enqueueFlowLog);
 router.post('/pdf-extract', enqueuePdfExtract);
 
-router.post('/publisher/schedule', schedulePublisher); // optional
+router.post('/publisher/schedule', schedulePublisher); 
 router.get('/:id', getJobStatus);
 
 export default router;
