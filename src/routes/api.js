@@ -4,7 +4,13 @@ import multer from 'multer';
 
 // --- CONTROLLERS ---
 import { chatHandler } from '../controllers/chat.controller.js';
-import { nmrAnalysisHandler, ld50AnalysisHandler, gcmsDifferentialHandler,gcmsProfilingHandler } from '../controllers/analysis.controller.js';
+import {
+  nmrAnalysisHandler,
+  ld50AnalysisHandler,
+  gcmsDifferentialHandler,
+  gcmsProfilingHandler,
+  getAnalysisJobHandler,
+} from '../controllers/analysis.controller.js';
 import { queryDataHandler, getDataByIDHandler, listCIDsHandler } from '../controllers/data.controller.js';
 import {
   processAndUploadHandler,
@@ -21,7 +27,6 @@ import {
   addLogEntryHandler,
 } from '../controllers/nft.controller.js';
 import { getDocumentContentHandler } from '../controllers/document.controller.js';
-
 
 const router = express.Router();
 
@@ -52,10 +57,13 @@ router.get('/cids', listCIDsHandler);
 // --- Raw Content Fetching ---
 router.get('/document-content/:cid', getDocumentContentHandler);
 
-// --- Analysis Tools (R Scripts) ---
+// --- Analysis (async-first; sync-compatible by waiting for result) ---
 router.post('/analyze/nmr', nmrAnalysisHandler);
 router.post('/analyze/ld50', ld50AnalysisHandler);
 router.post('/analyze/gcms-differential', gcmsDifferentialHandler);
-router.post('/analyze/gcms-profiling', gcmsProfilingHandler);   
+router.post('/analyze/gcms-profiling', gcmsProfilingHandler);
+
+// Polling endpoint for async analysis jobs (canonical)
+router.get('/analyze/jobs/:id', getAnalysisJobHandler);
 
 export default router;
