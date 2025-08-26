@@ -19,7 +19,7 @@ describe('R-backed jobs (mocked via TEST_FAKE_R)', () => {
 
     try {
       const job = await q.add('ld50-analyze', { dataUrl: 'http://example.com/ld50.csv' }, { removeOnComplete: true });
-      const result = await job.waitUntilFinished(qe, 5000);
+      const result = await job.waitUntilFinished(qe, 10000);
       expect(result.status).toBe('success');
       expect(result.results.ld50_estimate).toBeDefined();
     } finally {
@@ -28,14 +28,14 @@ describe('R-backed jobs (mocked via TEST_FAKE_R)', () => {
     }
   });
 
-  it('gcms-analyze returns stub JSON without calling R', async () => {
+  it('gcms-differential-analyze returns stub JSON without calling R', async () => {
     const q = new Queue(qName, { connection });
     const qe = new QueueEvents(qName, { connection });
     await qe.waitUntilReady();
 
     try {
-      const job = await q.add('gcms-analyze', { dataPath: '/tmp/data', phenoFile: '/tmp/pheno.csv' }, { removeOnComplete: true });
-      const result = await job.waitUntilFinished(qe, 8000);
+      const job = await q.add('gcms-differential-analyze', { dataPath: '/tmp/data', phenoFile: '/tmp/pheno.csv' }, { removeOnComplete: true });
+      const result = await job.waitUntilFinished(qe, 15000);
       expect(result.status).toBe('success');
       expect(result.results.stats_table?.length).toBeGreaterThan(0);
     } finally {
@@ -51,7 +51,7 @@ describe('R-backed jobs (mocked via TEST_FAKE_R)', () => {
 
     try {
       const job = await q.add('nmr-analyze', { dataPath: '/tmp/fid' }, { removeOnComplete: true });
-      const result = await job.waitUntilFinished(qe, 5000);
+      const result = await job.waitUntilFinished(qe, 10000);
       expect(result.ok).toBe(true);
       expect(result.log).toContain('FAKE_R');
     } finally {

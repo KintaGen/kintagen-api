@@ -12,7 +12,9 @@
     "reset-db": "node src/reset-db.js",
     "setup": "node setup-synapse.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "dev:compose:up": "docker compose up -d",
+    "dev:compose:down": "docker compose down -v"
   },
   "author": "",
   "license": "ISC",

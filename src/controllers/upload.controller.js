@@ -1,9 +1,7 @@
 // src/controllers/upload.controller.js
 import { query } from '../services/db.js';
 import { uploadData } from '../services/synapse.js';
-import * as aiService from '../services/ai.service.js';
-import * as pdfService from '../services/pdf.service.js';
-import fs from 'fs';
+
 
 
 // WORKERS

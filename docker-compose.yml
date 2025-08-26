@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: filcdn
+      POSTGRES_PASSWORD: filcdn123
+      POSTGRES_DB: filcdn
+    ports:
+      - "${PG_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U filcdn -d filcdn" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: [ "redis-server", "--save", "", "--appendonly", "no" ]
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

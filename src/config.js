@@ -2,8 +2,10 @@
 import 'dotenv/config';
 import { RPC_URLS } from '@filoz/synapse-sdk';
 
-const isTrueish = (v) => ['1', 'true', 'yes', 'on'].includes(String(v ?? '').toLowerCase());
-const MOCK_MODE = isTrueish(process.env.MOCK_MODE);
+// export a single helper we can reuse everywhere
+export const trueish = (v) => ['1', 'true', 'yes', 'on'].includes(String(v ?? '').toLowerCase());
+
+const MOCK_MODE = trueish(process.env.MOCK_MODE);
 
 const config = {
   port: Number(process.env.PORT || 3001),
@@ -16,7 +18,7 @@ const config = {
     network: process.env.SYNAPSE_NETWORK || 'calibration',
     rpcUrl: process.env.SYNAPSE_RPC_URL || '',
   },
-  // ADD: per-service mock flags (fallback to global MOCK_MODE)
+  // per-service mock flags (fallback to global MOCK_MODE)
   mocks: {
     ai: trueish(process.env.AI_MOCK) || MOCK_MODE,
     search: trueish(process.env.SEARCH_MOCK) || MOCK_MODE,
@@ -37,9 +39,7 @@ if (!MOCK_MODE) {
   }
   if (!config.synapse.rpcUrl) {
     config.synapse.rpcUrl = RPC_URLS[config.synapse.network]?.http;
-    if (!config.synapse.rpcUrl) {
-      throw new Error(`Invalid SYNAPSE_NETWORK: ${config.synapse.network}.`);
-    }
+    if (!config.synapse.rpcUrl) throw new Error(`Invalid SYNAPSE_NETWORK: ${config.synapse.network}.`);
   }
 }
 

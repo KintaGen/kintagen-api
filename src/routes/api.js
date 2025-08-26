@@ -11,12 +11,12 @@ import {
   gcmsProfilingHandler,
   getAnalysisJobHandler,
 } from '../controllers/analysis.controller.js';
-import { queryDataHandler, getDataByIDHandler, listCIDsHandler } from '../controllers/data.controller.js';
 import {
-  processAndUploadHandler,
-  uploadAndAddGenomeHandler,
-  uploadAndAddSpectrumHandler,
-} from '../controllers/upload.controller.js';
+  queryDataHandler,
+  getDataByIDHandler,
+  listCIDsHandler,
+} from '../controllers/data.controller.js';
+import { processAndUploadHandler } from '../controllers/upload.controller.js';
 import {
   listProjectsHandler,
   createProjectHandler,
@@ -32,12 +32,10 @@ const router = express.Router();
 
 // Multer instances
 const uploadToDisk = multer({ dest: 'uploads/' });
-const uploadToMemory = multer({ storage: multer.memoryStorage() });
+// const uploadToMemory = multer({ storage: multer.memoryStorage() }); // keep if you add memory routes later
 
 // --- Data Ingestion & Processing ---
 router.post('/upload', uploadToDisk.single('file'), processAndUploadHandler);
-router.post('/upload/genome', uploadToMemory.single('file'), uploadAndAddGenomeHandler);
-router.post('/upload/spectrum', uploadToMemory.single('file'), uploadAndAddSpectrumHandler);
 
 // --- Chat & AI Endpoints ---
 router.post('/chat', chatHandler);

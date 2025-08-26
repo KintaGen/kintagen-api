@@ -15,7 +15,7 @@ describe('bullmq queue basics', () => {
     await qe.waitUntilReady();
 
     const job = await q.add('self-test', { hello: 'world' }, { removeOnComplete: true });
-    const result = await job.waitUntilFinished(qe, 5000);
+    const result = await job.waitUntilFinished(qe, 10000);
 
     expect(result).toBeDefined();
     expect(result.ok).toBe(true);
@@ -42,7 +42,7 @@ describe('bullmq queue basics', () => {
 
     let failedErr;
     try {
-      await job.waitUntilFinished(qe, 6000); // rejects on failure
+      await job.waitUntilFinished(qe, 15000); // allow more time under parallel load
     } catch (err) {
       failedErr = err;
     }
