@@ -16,6 +16,13 @@ const config = {
     network: process.env.SYNAPSE_NETWORK || 'calibration',
     rpcUrl: process.env.SYNAPSE_RPC_URL || '',
   },
+  // ADD: per-service mock flags (fallback to global MOCK_MODE)
+  mocks: {
+    ai: trueish(process.env.AI_MOCK) || MOCK_MODE,
+    search: trueish(process.env.SEARCH_MOCK) || MOCK_MODE,
+    synapseDryRun: trueish(process.env.SYNAPSE_DRY_RUN) || MOCK_MODE,
+    flow: trueish(process.env.FLOW_MOCK) || MOCK_MODE,
+  },
 };
 
 if (!MOCK_MODE) {

@@ -9,6 +9,8 @@ import fs from 'fs';
 // WORKERS
 import { Queue, QueueEvents } from 'bullmq';
 import { connection } from '../queues/connection.js';
+import  { trueish } from '../config.js';
+
 
 
 /**
@@ -17,61 +19,59 @@ import { connection } from '../queues/connection.js';
  */
 export async function processAndUploadHandler(req, res, next) {
     try {
-      const {
-        projectId,
-        dataType,
-        title: manualTitle,
-        isEncrypted,
-        litTokenId,
-        async: isAsyncFlag,
-        timeoutMs,
-      } = req.body ?? {};
-  
-      if (!req.file || !dataType) {
-        return res.status(400).json({ error: 'A file and data type are required.' });
-      }
-  
-      const doAsync = isAsyncFlag === true || req.query.async === '1';
-      const q = new Queue('kintagen', { connection });
-      const qe = new QueueEvents('kintagen', { connection });
-      await qe.waitUntilReady();
-  
-      const payload = {
-        filePath: req.file.path,
-        originalname: req.file.originalname,
-        mimetype: req.file.mimetype,
-        size: req.file.size,
-        dataType,
-        projectId: projectId != null && projectId !== '' ? Number(projectId) : null,
-        manualTitle: manualTitle || '',
-        isEncrypted: String(isEncrypted) === 'true',
-        litTokenId: litTokenId || null,
-      };
-  
-      const job = await q.add('upload-file', payload, {
-        removeOnComplete: { age: 3600, count: 1000 },
-        removeOnFail: { age: 24 * 3600 },
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 2000 },
-      });
-  
-      if (doAsync) {
-        return res.status(202).json({ jobId: job.id });
-      }
-  
-      // Synchronous wait (optional)
-      const wait = Number(timeoutMs) || 180_000;
-      try {
-        const result = await job.waitUntilFinished(qe, wait);
-        return res.status(200).json(result);
-      } catch {
-        return res.status(202).json({ jobId: job.id, status: 'processing' });
-      }
+        const {
+            projectId,
+            dataType,
+            title: manualTitle,
+            isEncrypted,
+            litTokenId,
+        } = req.body ?? {};
+
+        if (!req.file || !dataType) {
+            return res.status(400).json({ error: 'A file and data type are required.' });
+        }
+
+        const doAsync = trueish(req.query.async) || trueish(req.body?.async);
+
+        const q = new Queue('kintagen', { connection });
+        const qe = new QueueEvents('kintagen', { connection });
+        await qe.waitUntilReady();
+
+        const payload = {
+            filePath: req.file.path,
+            originalname: req.file.originalname,
+            mimetype: req.file.mimetype,
+            size: req.file.size,
+            dataType,
+            projectId: projectId != null && projectId !== '' ? Number(projectId) : null,
+            manualTitle: manualTitle || '',
+            isEncrypted: trueish(isEncrypted),
+            litTokenId: litTokenId || null,
+        };
+
+        const job = await q.add('upload-file', payload, {
+            removeOnComplete: { age: 3600, count: 1000 },
+            removeOnFail: { age: 24 * 3600 },
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 2000 },
+        });
+
+        if (doAsync) {
+            return res.status(202).json({ jobId: job.id });
+        }
+
+        const wait = Number(req.body?.timeoutMs) || 180_000;
+        try {
+            const result = await job.waitUntilFinished(qe, wait);
+            return res.status(200).json(result);
+        } catch {
+            return res.status(202).json({ jobId: job.id, status: 'processing' });
+        }
     } catch (err) {
-      next(err);
+        next(err);
     }
-  }
-  
+}
+
 /**
  * A more generic handler that just uploads a file and adds its CID to the database.
  */
