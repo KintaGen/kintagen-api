@@ -22,12 +22,6 @@ import {
 } from '../controllers/nft.controller.js';
 import { getDocumentContentHandler } from '../controllers/document.controller.js';
 
-// FIXED: import the actual exported names from prompts.controller
-import {
-  createPromptHandler,
-  getPromptHandler,
-  listPromptsHandler,
-} from '../controllers/prompts.controller.js';
 
 const router = express.Router();
 
