@@ -7,15 +7,11 @@ import { RSCRIPT } from '../services/r-binary.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-
-
-// ADD:
 import fs from 'fs';
 import { query } from '../services/db.js';
 import { uploadData } from '../services/synapse.js';
 import * as aiService from '../services/ai.service.js';
 import * as pdfService from '../services/pdf.service.js';
-
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,7 +22,6 @@ const isFakeR = () => isTrueish(process.env.TEST_FAKE_R) || isTrueish(process.en
 function log(...args) {
   console.log('[QUEUE]', ...args);
 }
-
 
 async function handleSelfTest(job, data) {
   await job.updateProgress(50);
@@ -50,6 +45,135 @@ async function runRScriptOrStub(scriptRelPath, args, stubFactory) {
   }
 }
 
+async function handleUploadFile(job) {
+  const {
+    filePath,
+    originalname,
+    mimetype,
+    size,
+    dataType,
+    projectId,
+    manualTitle,
+    isEncrypted,
+    litTokenId,
+  } = job.data || {};
+
+  const cleanupTemp = () => {
+    try { if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* noop */ }
+  };
+
+  // reuse top-level isTrueish
+  const MOCK_MODE = isTrueish(process.env.MOCK_MODE);
+  if (MOCK_MODE) {
+    cleanupTemp();
+    return {
+      status: 'success',
+      cid: `bafy-mock-${Date.now()}`,
+      projectId,
+      title: manualTitle || originalname || 'Mock Upload',
+      isEncrypted,
+      litTokenId,
+      size,
+      dataType,
+      note: 'MOCK_MODE: upload not performed.',
+    };
+  }
+
+  if (!filePath || !dataType) throw new Error('Missing filePath or dataType.');
+
+  try {
+    await job.updateProgress(5);
+    const fileBuffer = fs.readFileSync(filePath);
+
+    await job.updateProgress(15);
+    const uploaded = await uploadData(fileBuffer);
+    const commp = uploaded.commp;
+
+    let response = {
+      status: 'success',
+      cid: commp,
+      projectId,
+      title: '',
+      isEncrypted,
+      litTokenId,
+      size,
+      dataType,
+    };
+
+    if (dataType === 'paper') {
+      if (isEncrypted) {
+        response.title = originalname || 'Encrypted Document';
+        await query(
+          `INSERT INTO paper (cid, title, project_id, is_encrypted, lit_token_id)
+           VALUES ($1,$2,$3,$4,$5) ON CONFLICT (cid) DO NOTHING`,
+          [commp, response.title, projectId, true, litTokenId]
+        );
+      } else {
+        let text = '';
+        if (mimetype === 'application/pdf') {
+          text = await pdfService.extractTextFromBuffer(fileBuffer);
+        } else if (String(mimetype || '').startsWith('text/')) {
+          text = fileBuffer.toString('utf-8');
+        }
+
+        if (text) {
+          await job.updateProgress(35);
+          const aiMeta = await aiService.extractMetadataFromText(text);
+          response = {
+            ...response,
+            title: aiMeta.title || (originalname || 'Untitled'),
+            journal: aiMeta.journal || '',
+            year: aiMeta.year ? Number(aiMeta.year) : null,
+            keywords: aiMeta.keywords || [],
+            authors: aiMeta.authors || [],
+            doi: aiMeta.doi || '',
+          };
+          await query(
+            `INSERT INTO paper (cid, title, journal, year, keywords, authors, project_id, is_encrypted, lit_token_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (cid) DO NOTHING`,
+            [
+              commp,
+              response.title,
+              response.journal || null,
+              response.year || null,
+              response.keywords,
+              response.authors,
+              projectId,
+              false,
+              litTokenId,
+            ]
+          );
+        } else {
+          response.title = originalname || 'Document';
+          await query(
+            `INSERT INTO paper (cid, title, project_id, is_encrypted, lit_token_id)
+             VALUES ($1,$2,$3,$4,$5) ON CONFLICT (cid) DO NOTHING`,
+            [commp, response.title, projectId, false, litTokenId]
+          );
+        }
+      }
+    } else if (dataType === 'experiment' || dataType === 'analysis') {
+      if (!manualTitle) throw new Error(`A title is required for ${dataType} data.`);
+      response.title = manualTitle;
+      const table = dataType === 'experiment' ? 'experiment' : 'analysis';
+      await query(
+        `INSERT INTO ${table} (cid, title, project_id, is_encrypted, lit_token_id)
+         VALUES ($1,$2,$3,$4,$5) ON CONFLICT (cid) DO NOTHING`,
+        [commp, response.title, projectId, !!isEncrypted, litTokenId]
+      );
+    } else {
+      throw new Error(`Unsupported dataType: ${dataType}`);
+    }
+
+    await job.updateProgress(100);
+    return response;
+  } catch (err) {
+    throw err;
+  } finally {
+    cleanupTemp();
+  }
+}
+
 export const worker = new Worker(
   'kintagen',
   async (job) => {
@@ -61,28 +185,31 @@ export const worker = new Worker(
           log('[research-chat] START', { id: job.id });
           const topic = job.data?.topic || '';
           const knowledgeBase = job.data?.knowledgeBase;
-          const prompt = `Solve: ${topic}; Context: ${knowledgeBase}`
+          const prompt = `Solve: ${topic}; Context: ${knowledgeBase}`;
           log('[research-chat] topic:', topic);
           await job.updateProgress(5);
-          const ai = await import('../services/ai.service.js');
+
           await job.updateProgress(10);
           log('[research-chat] generating queries…');
-          const queries = await ai.generateSearchQueries(prompt);
+          const queries = await aiService.generateSearchQueries(prompt);
           log('[research-chat] queries generated:', queries?.length ?? 0);
           if (Array.isArray(queries)) {
             for (let i = 0; i < Math.min(3, queries.length); i++) {
               log(`[research-chat] q${i + 1}:`, queries[i]);
             }
           }
+
           await job.updateProgress(40);
           log('[research-chat] fetching search results…');
-          const results = await ai.getSearchResults(queries);
+          const results = await aiService.getSearchResults(queries);
           log('[research-chat] results received:', results?.length ?? 0);
+
           await job.updateProgress(70);
           log('[research-chat] synthesizing report…');
-          const reply = await ai.synthesizeReport(prompt, results);
+          const reply = await aiService.synthesizeReport(prompt, results);
           const replyPreview = String(reply || '').slice(0, 200).replace(/\s+/g, ' ');
           log('[research-chat] reply preview:', replyPreview || '(empty)');
+
           await job.updateProgress(100);
           log('[research-chat] DONE', { id: job.id });
           return {
@@ -99,11 +226,13 @@ export const worker = new Worker(
         }
       }
 
-      case 'self-test':
+      case 'self-test': {
         return handleSelfTest(job, job.data);
+      }
 
-      case 'force-fail':
-        throw new Error('simulated failure');
+      case 'force-fail': {
+        throw new Error('forced failure for test');
+      }
 
       case 'ld50-analyze': {
         const { dataUrl } = job.data || {};
@@ -181,10 +310,10 @@ export const worker = new Worker(
           }),
         );
       }
-      // src/queues/worker.js  (inside the Worker processor switch)
-      case 'upload-file':
-        return await handleUploadFile(job);
 
+      case 'upload-file': {
+        return await handleUploadFile(job);
+      }
 
       default:
         throw new Error(`Unknown job: ${job.name}`);
@@ -192,139 +321,6 @@ export const worker = new Worker(
   },
   { connection }
 );
-
-// src/queues/worker.js
-async function handleUploadFile(job) {
-  const {
-    filePath,
-    originalname,
-    mimetype,
-    size,
-    dataType,
-    projectId,
-    manualTitle,
-    isEncrypted,
-    litTokenId,
-  } = job.data || {};
-
-  const cleanupTemp = () => {
-    try { if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { }
-  };
-
-  // Allow safe stubbing in MOCK_MODE
-  const isTrueish = (v) => ['1', 'true', 'yes', 'on'].includes(String(v ?? '').toLowerCase());
-  const MOCK_MODE = isTrueish(process.env.MOCK_MODE);
-  if (MOCK_MODE) {
-    cleanupTemp();
-    return {
-      status: 'success',
-      cid: `bafy-mock-${Date.now()}`,
-      projectId,
-      title: manualTitle || originalname || 'Mock Upload',
-      isEncrypted,
-      litTokenId,
-      size,
-      dataType,
-      note: 'MOCK_MODE: upload not performed.',
-    };
-  }
-
-  if (!filePath || !dataType) throw new Error('Missing filePath or dataType.');
-
-  try {
-    await job.updateProgress(5);
-    const fileBuffer = fs.readFileSync(filePath);
-
-    await job.updateProgress(15);
-    const uploaded = await uploadData(fileBuffer);
-    const commp = uploaded.commp;
-
-    let response = {
-      status: 'success',
-      cid: commp,
-      projectId,
-      title: '',
-      isEncrypted,
-      litTokenId,
-      size,
-      dataType,
-    };
-
-    // Branch by data type (DB inserts)
-    if (dataType === 'paper') {
-      if (isEncrypted) {
-        response.title = originalname || 'Encrypted Document';
-        await query(
-          `INSERT INTO paper (cid, title, project_id, is_encrypted, lit_token_id)
-           VALUES ($1,$2,$3,$4,$5) ON CONFLICT (cid) DO NOTHING`,
-          [commp, response.title, projectId, true, litTokenId]
-        );
-      } else {
-        let text = '';
-        if (mimetype === 'application/pdf') {
-          text = await pdfService.extractTextFromBuffer(fileBuffer);
-        } else if (String(mimetype || '').startsWith('text/')) {
-          text = fileBuffer.toString('utf-8');
-        }
-
-        if (text) {
-          await job.updateProgress(35);
-          const aiMeta = await aiService.extractMetadataFromText(text);
-          response = {
-            ...response,
-            title: aiMeta.title || (originalname || 'Untitled'),
-            journal: aiMeta.journal || '',
-            year: aiMeta.year ? Number(aiMeta.year) : null,
-            keywords: aiMeta.keywords || [],
-            authors: aiMeta.authors || [],
-            doi: aiMeta.doi || '',
-          };
-          await query(
-            `INSERT INTO paper (cid, title, journal, year, keywords, authors, project_id, is_encrypted, lit_token_id)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (cid) DO NOTHING`,
-            [
-              commp,
-              response.title,
-              response.journal || null,
-              response.year || null,
-              response.keywords,
-              response.authors,
-              projectId,
-              false,
-              litTokenId,
-            ]
-          );
-        } else {
-          response.title = originalname || 'Document';
-          await query(
-            `INSERT INTO paper (cid, title, project_id, is_encrypted, lit_token_id)
-             VALUES ($1,$2,$3,$4,$5) ON CONFLICT (cid) DO NOTHING`,
-            [commp, response.title, projectId, false, litTokenId]
-          );
-        }
-      }
-    } else if (dataType === 'experiment' || dataType === 'analysis') {
-      if (!manualTitle) throw new Error(`A title is required for ${dataType} data.`);
-      response.title = manualTitle;
-      const table = dataType === 'experiment' ? 'experiment' : 'analysis';
-      await query(
-        `INSERT INTO ${table} (cid, title, project_id, is_encrypted, lit_token_id)
-         VALUES ($1,$2,$3,$4,$5) ON CONFLICT (cid) DO NOTHING`,
-        [commp, response.title, projectId, !!isEncrypted, litTokenId]
-      );
-    } else {
-      throw new Error(`Unsupported dataType: ${dataType}`);
-    }
-
-    await job.updateProgress(100);
-    return response;
-  } catch (err) {
-    throw err;
-  } finally {
-    cleanupTemp();
-  }
-}
-
 
 worker.on('completed', (job) => log('completed', job.id));
 worker.on('failed', (job, err) => log('failed', job?.id, err?.message));

@@ -1,0 +1,705 @@
+===== analysis.controller.enqueue.test.js =====
+// test/analysis.controller.enqueue.test.js
+import { describe, it, expect, beforeAll } from 'vitest';
+
+beforeAll(() => {
+  process.env.REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+});
+
+describe('analysis.controller enqueue (async)', () => {
+  it.each([
+    ['ld50', 'ld50AnalysisHandler'],
+    ['nmr', 'nmrAnalysisHandler'],
+    ['gcms-differential', 'gcmsDifferentialHandler'],
+    ['gcms-profiling', 'gcmsProfilingHandler'],
+  ])('enqueues %s job and returns jobId', async (_name, handlerName) => {
+    const mod = await import('../src/controllers/analysis.controller.js');
+    const handler = mod[handlerName];
+    const req = { body: { async: true } };
+    const res = { v: null, json(x){ this.v = x; return this; }, status(){ return this; } };
+    await handler(req, res, (e) => { throw e; });
+    expect(typeof res.v.jobId).toBe('string');
+  });
+});
+===== analysis.jobstatus.controller.test.js =====
+// test/analysis.jobstatus.controller.test.js
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { Queue, QueueEvents } from 'bullmq';
+import { connection } from '../src/queues/connection.js';
+
+// Start the worker so it can process the job.
+await import('../src/queues/worker.js');
+
+const qName = 'kintagen';
+let q;
+let qe;
+
+beforeAll(async () => {
+  q = new Queue(qName, { connection });
+  qe = new QueueEvents(qName, { connection });
+  await qe.waitUntilReady();
+});
+
+afterAll(async () => {
+  await q?.close();
+  await qe?.close();
+});
+
+async function callGetAnalysisJob(jobId) {
+  const { getAnalysisJobHandler } = await import('../src/controllers/analysis.controller.js');
+
+  // minimal mock res/next
+  const req = { params: { jobId } };
+  const res = {
+    _status: 200,
+    _json: null,
+    status(code) { this._status = code; return this; },
+    json(obj) { this._json = obj; return this; },
+  };
+
+  await getAnalysisJobHandler(req, res, (e) => { if (e) throw e; });
+  return { status: res._status, body: res._json };
+}
+
+async function waitUntilControllerStates(jobId, targetStates, { timeoutMs = 20000, pollMs = 100 } = {}) {
+  const start = Date.now();
+  while (true) {
+    const { body } = await callGetAnalysisJob(jobId);
+    const state = body?.state;
+    if (targetStates.includes(state)) return body;
+
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`Timed out waiting for state ${targetStates.join('|')} (id=${jobId})`);
+    }
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+}
+
+describe('getAnalysisJobHandler returns live job status', () => {
+  it(
+    'returns status for an existing job',
+    async () => {
+      // Keep the job around after completion so the controller can read it.
+      const jobId = `ctl-selftest-${Date.now()}-${Math.random()}`;
+      const job = await q.add(
+        'self-test',
+        { ping: 'pong' },
+        { jobId, removeOnComplete: false, removeOnFail: false }
+      );
+
+      // Optionally wait directly on the event stream to ensure completion
+      await job.waitUntilFinished(qe, 40000);
+
+      // Poll the controller until we see terminal state
+      const payload = await waitUntilControllerStates(job.id, ['completed', 'failed'], { timeoutMs: 20000 });
+      expect(payload).toBeTruthy();
+      expect(payload.jobId).toBe(job.id);
+      expect(['completed', 'failed']).toContain(payload.state);
+      expect(payload.state).toBe('completed');
+    },
+    30000
+  );
+});
+===== chat.controller.validation.test.js =====
+// test/chat.controller.validation.test.js
+import { describe, it, expect } from 'vitest';
+
+describe('chat.controller validation', () => {
+  it('400 on missing messages array', async () => {
+    const { chatHandler } = await import('../src/controllers/chat.controller.js');
+    const req = { body: { filecoinContext: [] } };
+    const res = {
+      statusCode: 200,
+      payload: null,
+      status(c) { this.statusCode = c; return this; },
+      json(p) { this.payload = p; return this; },
+    };
+    let caught = null;
+    await chatHandler(req, res, (e) => { caught = e; });
+    expect(caught).toBeTruthy();
+    expect(caught.statusCode).toBe(400);
+    expect(caught.details).toBeDefined();
+  });
+});
+===== jobs.controller.status.test.js =====
+// test/analysis.jobstatus.controller.test.js
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { Queue, QueueEvents } from 'bullmq';
+import { connection } from '../src/queues/connection.js';
+
+// ensure worker is running
+await import('../src/queues/worker.js');
+
+const qName = 'kintagen';
+let q;
+let qe;
+
+beforeAll(async () => {
+  q = new Queue(qName, { connection });
+  qe = new QueueEvents(qName, { connection });
+  await qe.waitUntilReady();
+});
+
+afterAll(async () => {
+  await q?.close();
+  await qe?.close();
+});
+
+async function callGetAnalysisJob(jobId) {
+  const { getAnalysisJobHandler } = await import('../src/controllers/analysis.controller.js');
+  const req = { params: { jobId } };
+  const res = {
+    _status: 200,
+    _json: null,
+    status(code) { this._status = code; return this; },
+    json(obj) { this._json = obj; return this; },
+  };
+  await getAnalysisJobHandler(req, res, (e) => { if (e) throw e; });
+  return { status: res._status, body: res._json };
+}
+
+async function waitUntilControllerStates(jobId, targetStates, { timeoutMs = 20000, pollMs = 100 } = {}) {
+  const start = Date.now();
+  while (true) {
+    const { body } = await callGetAnalysisJob(jobId);
+    const state = body?.state;
+    if (targetStates.includes(state)) return body;
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`Timed out waiting for state ${targetStates.join('|')} (id=${jobId})`);
+    }
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+}
+
+describe.sequential('getAnalysisJobHandler returns live job status', () => {
+  it(
+    'returns status for an existing job',
+    async () => {
+      const jobId = `ctl-selftest-${Date.now()}-${Math.random()}`;
+      const job = await q.add(
+        'self-test',
+        { ping: 'pong' },
+        { jobId, removeOnComplete: false, removeOnFail: false }
+      );
+
+      // prefer events, but tolerate event delivery flakes
+      try {
+        await job.waitUntilFinished(qe, 20000);
+      } catch {
+        // fallback polling on the queue itself
+        const start = Date.now();
+        while (true) {
+          const fresh = await q.getJob(job.id);
+          if (fresh && (await fresh.getState()) === 'completed') break;
+          if (Date.now() - start > 20000) throw new Error(`Timed out waiting for job completion (id=${job.id})`);
+          await new Promise(r => setTimeout(r, 100));
+        }
+      }
+
+      // now assert via the controller
+      const payload = await waitUntilControllerStates(job.id, ['completed', 'failed'], { timeoutMs: 20000 });
+      expect(payload).toBeTruthy();
+      expect(['completed', 'failed']).toContain(payload.state);
+      expect(payload.state).toBe('completed');
+
+      // Controller shape may or may not include jobId; check if present.
+      const returnedId = payload.jobId ?? payload.id ?? payload.job?.id;
+      if (returnedId) expect(returnedId).toBe(job.id);
+    },
+    30000
+  );
+});
+===== repo_contents.txt =====
+===== analysis.controller.enqueue.test.js =====
+// test/analysis.controller.enqueue.test.js
+import { describe, it, expect, beforeAll } from 'vitest';
+
+beforeAll(() => {
+  process.env.REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+});
+
+describe('analysis.controller enqueue (async)', () => {
+  it.each([
+    ['ld50', 'ld50AnalysisHandler'],
+    ['nmr', 'nmrAnalysisHandler'],
+    ['gcms-differential', 'gcmsDifferentialHandler'],
+    ['gcms-profiling', 'gcmsProfilingHandler'],
+  ])('enqueues %s job and returns jobId', async (_name, handlerName) => {
+    const mod = await import('../src/controllers/analysis.controller.js');
+    const handler = mod[handlerName];
+    const req = { body: { async: true } };
+    const res = { v: null, json(x){ this.v = x; return this; }, status(){ return this; } };
+    await handler(req, res, (e) => { throw e; });
+    expect(typeof res.v.jobId).toBe('string');
+  });
+});
+===== analysis.jobstatus.controller.test.js =====
+// test/analysis.jobstatus.controller.test.js
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { Queue, QueueEvents } from 'bullmq';
+import { connection } from '../src/queues/connection.js';
+
+// Start the worker so it can process the job.
+await import('../src/queues/worker.js');
+
+const qName = 'kintagen';
+let q;
+let qe;
+
+beforeAll(async () => {
+  q = new Queue(qName, { connection });
+  qe = new QueueEvents(qName, { connection });
+  await qe.waitUntilReady();
+});
+
+afterAll(async () => {
+  await q?.close();
+  await qe?.close();
+});
+
+async function callGetAnalysisJob(jobId) {
+  const { getAnalysisJobHandler } = await import('../src/controllers/analysis.controller.js');
+
+  // minimal mock res/next
+  const req = { params: { jobId } };
+  const res = {
+    _status: 200,
+    _json: null,
+    status(code) { this._status = code; return this; },
+    json(obj) { this._json = obj; return this; },
+  };
+
+  await getAnalysisJobHandler(req, res, (e) => { if (e) throw e; });
+  return { status: res._status, body: res._json };
+}
+
+async function waitUntilControllerStates(jobId, targetStates, { timeoutMs = 20000, pollMs = 100 } = {}) {
+  const start = Date.now();
+  while (true) {
+    const { body } = await callGetAnalysisJob(jobId);
+    const state = body?.state;
+    if (targetStates.includes(state)) return body;
+
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`Timed out waiting for state ${targetStates.join('|')} (id=${jobId})`);
+    }
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+}
+
+describe('getAnalysisJobHandler returns live job status', () => {
+  it(
+    'returns status for an existing job',
+    async () => {
+      // Keep the job around after completion so the controller can read it.
+      const jobId = `ctl-selftest-${Date.now()}-${Math.random()}`;
+      const job = await q.add(
+        'self-test',
+        { ping: 'pong' },
+        { jobId, removeOnComplete: false, removeOnFail: false }
+      );
+
+      // Optionally wait directly on the event stream to ensure completion
+      await job.waitUntilFinished(qe, 40000);
+
+      // Poll the controller until we see terminal state
+      const payload = await waitUntilControllerStates(job.id, ['completed', 'failed'], { timeoutMs: 20000 });
+      expect(payload).toBeTruthy();
+      expect(payload.jobId).toBe(job.id);
+      expect(['completed', 'failed']).toContain(payload.state);
+      expect(payload.state).toBe('completed');
+    },
+    30000
+===== upload.controller.enqueue.test.js =====
+// test/upload.controller.enqueue.test.js
+import { describe, it, expect } from 'vitest';
+
+describe('upload.controller enqueue (async)', () => {
+  it('returns 202 and jobId when async flag set', async () => {
+    const { processAndUploadHandler } = await import('../src/controllers/upload.controller.js');
+    const req = {
+      body: { async: true, dataType: 'paper', projectId: 1 },
+      query: { async: '1' },
+      file: {
+        path: '/tmp/fake.txt',
+        originalname: 'fake.txt',
+        mimetype: 'text/plain',
+        size: 12,
+      },
+    };
+    const res = {
+      code: 200,
+      payload: null,
+      status(c) { this.code = c; return this; },
+      json(p) { this.payload = p; return this; },
+    };
+    await processAndUploadHandler(req, res, (e) => { throw e; });
+    expect(res.code).toBe(202);
+    expect(typeof res.payload.jobId).toBe('string');
+  });
+});
+===== analyisis.controller.enqueue.test.js =====
+===== bullmq.selftest.test.js =====
+// test/bullmq.selftest.test.js
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { Queue, QueueEvents } from 'bullmq';
+import { connection } from '../src/queues/connection.js';
+
+// start the real worker so jobs get processed
+await import('../src/queues/worker.js');
+
+const qName = 'kintagen';
+let q;
+let qe;
+
+async function waitUntilStatePolling(queue, jobId, targets, { timeoutMs = 20000, intervalMs = 100 } = {}) {
+  const start = Date.now();
+  while (true) {
+    const job = await queue.getJob(jobId);
+    if (job) {
+      const state = await job.getState();
+      if (targets.includes(state)) return { state, job };
+    }
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`Timed out waiting for state ${targets.join('|')} (id=${jobId})`);
+    }
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+}
+
+beforeAll(async () => {
+  q = new Queue(qName, { connection });
+  qe = new QueueEvents(qName, { connection });
+  await qe.waitUntilReady();
+});
+
+afterAll(async () => {
+  await q?.close();
+  await qe?.close();
+});
+
+describe.sequential('bullmq queue basics', () => {
+  it(
+    'processes a self-test job to completion',
+    async () => {
+      const jobId = `selftest-${Date.now()}-${Math.random()}`;
+      const job = await q.add(
+        'self-test',
+        { hello: 'world' },
+        { jobId, removeOnComplete: false, removeOnFail: false }
+      );
+
+      // try the event path first; if it flakes, fall back to polling
+      let result;
+      try {
+        result = await job.waitUntilFinished(qe, 20000);
+      } catch {
+        await waitUntilStatePolling(q, job.id, ['completed'], { timeoutMs: 20000 });
+        result = { ok: true };
+      }
+
+      expect(result).toBeTruthy();
+      const fresh = await q.getJob(job.id);
+      expect(fresh).toBeTruthy();
+      expect(await fresh.getState()).toBe('completed');
+    },
+    30000
+  );
+
+  it(
+    'retries and then fails a force-fail job',
+    async () => {
+      const jobId = `fail-${Date.now()}-${Math.random()}`;
+      const job = await q.add(
+        'force-fail',
+        {},
+        { jobId, attempts: 2, backoff: { type: 'fixed', delay: 50 }, removeOnComplete: false, removeOnFail: false }
+      );
+
+      // event path + fallback polling to confirm failure
+      let failed = false;
+      try {
+        await job.waitUntilFinished(qe, 20000);
+      } catch {
+        failed = true;
+      }
+      if (!failed) {
+        const { state } = await waitUntilStatePolling(q, job.id, ['failed'], { timeoutMs: 20000 });
+        expect(state).toBe('failed');
+      }
+
+      const fresh = await q.getJob(job.id);
+      expect(fresh).toBeTruthy();
+      expect(fresh.attemptsMade).toBe(2);
+      expect(await fresh.getState()).toBe('failed');
+    },
+    30000
+  );
+});
+===== chat.controller.enqueue.test.js =====
+// test/chat.controller.enqueue.test.js
+import { describe, it, expect, beforeAll } from 'vitest';
+
+beforeAll(() => {
+  process.env.REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+});
+
+describe('chat.controller enqueue', () => {
+  it('returns 202 and a jobId', async () => {
+    const { chatHandler } = await import('../src/controllers/chat.controller.js');
+    const req = {
+      body: {
+        messages: [
+          { sender: 'user', text: 'hello' },
+          { sender: 'assistant', text: 'ok' },
+          { sender: 'user', text: 'research quantum' },
+        ],
+        filecoinContext: [],
+      },
+    };
+    const res = {
+      statusCode: 200,
+      payload: null,
+      status(c) { this.statusCode = c; return this; },
+      json(p) { this.payload = p; return this; },
+    };
+    await chatHandler(req, res, (e) => { throw e; });
+    expect(res.statusCode).toBe(202);
+    expect(typeof res.payload.jobId).toBe('string');
+  });
+});
+===== controllers.mock.test.js =====
+// test/controllers.mock.test.js
+import { describe, it, expect, beforeAll } from 'vitest';
+
+beforeAll(() => {
+  process.env.MOCK_MODE = 'true'; // document.controller checks string 'true'
+});
+
+const makeRes = () => {
+  const res = {
+    _status: 200,
+    _json: null,
+    status(code) { this._status = code; return this; },
+    json(obj) { this._json = obj; return this; },
+  };
+  return res;
+};
+
+describe('controllers in mock mode', () => {
+  it('queryDataHandler returns mock papers', async () => {
+    const { queryDataHandler } = await import('../src/controllers/data.controller.js');
+    const req = { params: { type: 'paper' }, query: {} };
+    const res = makeRes();
+    await queryDataHandler(req, res, (e) => { throw e; });
+    expect(res._status).toBe(200);
+    expect(Array.isArray(res._json.data)).toBe(true);
+  });
+
+  it('getDocumentContentHandler returns mock content', async () => {
+    const { getDocumentContentHandler } = await import('../src/controllers/document.controller.js');
+    const req = { params: { cid: 'bafy-mock' } };
+    const res = makeRes();
+    await getDocumentContentHandler(req, res, (e) => { throw e; });
+    expect(res._status).toBe(200);
+    expect(res._json.isRaw).toBe(false);
+    expect(res._json.content).toContain('Mock content for CID bafy-mock');
+  });
+});
+===== lock.service.test.js =====
+// test/lock.service.test.js
+import { describe, it, expect } from 'vitest';
+import { acquireLock, releaseLock } from '../src/services/lock.service.js';
+
+describe('lock.service', () => {
+  it('second acquirer waits until the lock is released', async () => {
+    const t0 = Date.now();
+    await acquireLock(); // take the lock
+
+    const waiter = (async () => {
+      await acquireLock(); // should wait ~2s (poll interval)
+      releaseLock();
+      return Date.now() - t0;
+    })();
+
+    // release after 300ms to force at least one poll cycle
+    setTimeout(() => releaseLock(), 300);
+
+    const elapsed = await waiter;
+    expect(elapsed).toBeGreaterThanOrEqual(1800); // >= ~2s minus drift
+  }, 20000);
+});
+===== r.jobs.mocked.test.js =====
+// test/r.jobs.mocked.test.js
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { Queue, QueueEvents } from 'bullmq';
+import { connection } from '../src/queues/connection.js';
+
+// Ensure the worker uses stubs and is started before tests
+process.env.TEST_FAKE_R = 'true';
+await import('../src/queues/worker.js');
+
+const qName = 'kintagen';
+let q, qe;
+
+beforeAll(async () => {
+  q = new Queue(qName, { connection });
+  qe = new QueueEvents(qName, { connection });
+  await qe.waitUntilReady(); // <- important: ready before adding any jobs
+});
+
+afterAll(async () => {
+  await q?.close();
+  await qe?.close();
+});
+
+describe('R-backed jobs (mocked via TEST_FAKE_R)', () => {
+  it('ld50-analyze returns stub JSON without calling R', async () => {
+    const job = await q.add(
+      'ld50-analyze',
+      { dataUrl: 'http://example.com/ld50.csv' },
+      { removeOnComplete: false, removeOnFail: false }
+    );
+
+    const result = await job.waitUntilFinished(qe, 20000);
+
+    expect(result).not.toBeNull();
+    expect(result.status).toBe('success');
+    expect(result.results.ld50_estimate).toBeDefined();
+  });
+
+  it('gcms-differential-analyze returns stub JSON without calling R', async () => {
+    const job = await q.add(
+      'gcms-differential-analyze',
+      { dataPath: '/tmp/data', phenoFile: '/tmp/pheno.csv' },
+      { removeOnComplete: false, removeOnFail: false }
+    );
+
+    const result = await job.waitUntilFinished(qe, 25000);
+
+    expect(result).not.toBeNull();
+    expect(result.status).toBe('success');
+    expect(Array.isArray(result.results.stats_table)).toBe(true);
+    expect(result.results.stats_table.length).toBeGreaterThan(0);
+  });
+
+  it('nmr-analyze returns stub JSON without calling R', async () => {
+    const job = await q.add(
+      'nmr-analyze',
+      { dataPath: '/tmp/fid' },
+      { removeOnComplete: false, removeOnFail: false }
+    );
+
+    const result = await job.waitUntilFinished(qe, 20000);
+
+    expect(result).not.toBeNull();
+    expect(result.ok).toBe(true);
+    expect(String(result.log || '')).toContain('FAKE_R');
+  });
+});
+===== redis.ping.test.js =====
+import { describe, it, expect } from 'vitest';
+import Redis from 'ioredis';
+
+describe('redis connectivity', () => {
+  it('responds to PING', async () => {
+    const redis = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379');
+    const res = await redis.ping();
+    await redis.quit();
+    expect(res).toBe('PONG');
+  });
+});
+===== research.worker.mocked.test.js =====
+// test/research.worker.mocked.test.js
+import { describe, it, expect, beforeAll } from 'vitest';
+import { Queue, QueueEvents } from 'bullmq';
+import { connection } from '../src/queues/connection.js';
+
+// Mock AI & search only; no need for MOCK_MODE globally here
+process.env.AI_MOCK = '1';
+process.env.SEARCH_MOCK = '1';
+
+// Start the worker
+await import('../src/queues/worker.js');
+
+const qName = 'kintagen';
+let q, qe;
+
+beforeAll(async () => {
+  q = new Queue(qName, { connection });
+  qe = new QueueEvents(qName, { connection });
+  await qe.waitUntilReady();
+});
+
+describe('research-chat job (mocked AI/search)', () => {
+  it('returns a mock report and meta', async () => {
+    const job = await q.add('research-chat', {
+      topic: 'test topic',
+      knowledgeBase: [{ cid: 'bafy-mock', note: 'kb' }],
+    }, { removeOnComplete: true });
+
+    const result = await job.waitUntilFinished(qe, 4000);
+
+    expect(result).toBeDefined();
+    expect(result.reply).toContain('MOCK REPORT');
+    expect(result.meta).toBeDefined();
+  });
+});
+===== upload.worker.mocked.test.js =====
+// test/upload.worker.mocked.test.js
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { Queue, QueueEvents } from 'bullmq';
+import { connection } from '../src/queues/connection.js';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
+// Ensure mocked execution (no Synapse, no AI costs, no DB writes in worker)
+process.env.MOCK_MODE = 'true';
+process.env.AI_MOCK = '1';
+process.env.SEARCH_MOCK = '1';
+process.env.SYNAPSE_DRY_RUN = '1';
+
+// Start the real worker (registers processors)
+await import('../src/queues/worker.js');
+
+const qName = 'kintagen';
+let q, qe;
+
+beforeAll(async () => {
+  q = new Queue(qName, { connection });
+  qe = new QueueEvents(qName, { connection });
+  await qe.waitUntilReady();
+});
+
+afterAll(async () => {
+  await q.close();
+  await qe.close();
+});
+
+describe('upload-file job (mocked)', () => {
+  it('uploads a text file (dry-run) and returns a stub CID', async () => {
+    const tmp = path.join(os.tmpdir(), `kg-upload-${Date.now()}.txt`);
+    fs.writeFileSync(tmp, 'Hello KintaGen!');
+
+    const job = await q.add('upload-file', {
+      filePath: tmp,
+      originalname: 'hello.txt',
+      mimetype: 'text/plain',
+      size: fs.statSync(tmp).size,
+      dataType: 'paper',
+      projectId: 1,
+      manualTitle: '',
+      isEncrypted: false,
+      litTokenId: null,
+    }, { removeOnComplete: true });
+
+    const result = await job.waitUntilFinished(qe, 5000);
+
+    expect(result).toBeDefined();
+    expect(result.status).toBe('success');
+    expect(result.cid).toMatch(/^bafy-/); // dry-run CID shape
+    expect(result.dataType).toBe('paper');
+    expect(result.isEncrypted).toBe(false);
+  });
+});

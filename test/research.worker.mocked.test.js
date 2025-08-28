@@ -26,7 +26,7 @@ describe('research-chat job (mocked AI/search)', () => {
       knowledgeBase: [{ cid: 'bafy-mock', note: 'kb' }],
     }, { removeOnComplete: true });
 
-    const result = await job.waitUntilFinished(qe, 15000);
+    const result = await job.waitUntilFinished(qe, 4000);
 
     expect(result).toBeDefined();
     expect(result.reply).toContain('MOCK REPORT');

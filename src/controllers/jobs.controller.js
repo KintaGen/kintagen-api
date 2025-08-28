@@ -1,9 +1,7 @@
 // src/controllers/jobs.controller.js
-import { jobs } from '../queues/queue.js';
-import { Queue } from 'bullmq';
-import { connection } from '../queues/connection.js';
 
-const kq = jobs; // alias
+import { jobs as queue } from '../queues/queue.js';
+
 
 export async function enqueueLd50(req, res, next) {
   try {
@@ -62,33 +60,21 @@ export async function schedulePublisher(req, res, next) {
 export async function getJobStatus(req, res, next) {
   try {
     const { id } = req.params;
-    const q = new Queue('kintagen', { connection });
-    const job = await q.getJob(id);
+    const job = await queue.getJob(id);
     if (!job) return res.status(404).json({ error: 'job not found' });
 
     const state = await job.getState();
-
-    // BullMQ v5 logs
     let logsArr = [];
     try {
-      const qLogs = await q.getJobLogs(job.id);
+      const qLogs = await queue.getJobLogs(job.id);
       logsArr = qLogs?.logs || [];
-    } catch {
-      logsArr = [];
-    }
+    } catch { /* ignore */ }
 
     res.json({
-      id: job.id,
-      name: job.name,
-      state,
-      progress: job.progress,
-      attemptsMade: job.attemptsMade,
-      failedReason: job.failedReason || null,
-      returnvalue: job.returnvalue || null,
-      logs: logsArr,
-      timestamp: job.timestamp,
-      finishedOn: job.finishedOn,
-      processedOn: job.processedOn,
+      id: job.id, name: job.name, state, progress: job.progress,
+      attemptsMade: job.attemptsMade, failedReason: job.failedReason || null,
+      returnvalue: job.returnvalue || null, logs: logsArr, timestamp: job.timestamp,
+      finishedOn: job.finishedOn, processedOn: job.processedOn,
     });
   } catch (e) { next(e); }
 }

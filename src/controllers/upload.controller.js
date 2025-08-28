@@ -1,14 +1,11 @@
 // src/controllers/upload.controller.js
+
+import { jobs as queue, queueEvents as qe } from '../queues/queue.js';
+import { getLogger } from '../services/logger.js';
+
+
 import { query } from '../services/db.js';
 import { uploadData } from '../services/synapse.js';
-
-
-
-// WORKERS
-import { Queue, QueueEvents } from 'bullmq';
-import { connection } from '../queues/connection.js';
-import  { trueish } from '../config.js';
-
 
 
 /**
@@ -16,24 +13,12 @@ import  { trueish } from '../config.js';
  * It categorizes data based on the 'dataType' parameter from the request.
  */
 export async function processAndUploadHandler(req, res, next) {
+    const log = getLogger();
     try {
-        const {
-            projectId,
-            dataType,
-            title: manualTitle,
-            isEncrypted,
-            litTokenId,
-        } = req.body ?? {};
+        const { projectId, dataType, title: manualTitle, isEncrypted, litTokenId } = req.body ?? {};
+        if (!req.file || !dataType) return res.status(400).json({ error: 'A file and data type are required.' });
 
-        if (!req.file || !dataType) {
-            return res.status(400).json({ error: 'A file and data type are required.' });
-        }
-
-        const doAsync = trueish(req.query.async) || trueish(req.body?.async);
-
-        const q = new Queue('kintagen', { connection });
-        const qe = new QueueEvents('kintagen', { connection });
-        await qe.waitUntilReady();
+        const doAsync = ['1', 'true', 'yes', 'on'].includes(String(req.query.async ?? req.body?.async ?? '').toLowerCase());
 
         const payload = {
             filePath: req.file.path,
@@ -43,31 +28,29 @@ export async function processAndUploadHandler(req, res, next) {
             dataType,
             projectId: projectId != null && projectId !== '' ? Number(projectId) : null,
             manualTitle: manualTitle || '',
-            isEncrypted: trueish(isEncrypted),
+            isEncrypted: ['1', 'true', 'yes', 'on'].includes(String(isEncrypted ?? '').toLowerCase()),
             litTokenId: litTokenId || null,
         };
 
-        const job = await q.add('upload-file', payload, {
+        const job = await queue.add('upload-file', payload, {
             removeOnComplete: { age: 3600, count: 1000 },
             removeOnFail: { age: 24 * 3600 },
             attempts: 3,
             backoff: { type: 'exponential', delay: 2000 },
         });
 
-        if (doAsync) {
-            return res.status(202).json({ jobId: job.id });
-        }
+        if (doAsync) return res.status(202).json({ jobId: job.id });
 
         const wait = Number(req.body?.timeoutMs) || 180_000;
         try {
+            await qe.waitUntilReady();
             const result = await job.waitUntilFinished(qe, wait);
             return res.status(200).json(result);
         } catch {
+            log.warn({ jobId: job.id }, '[upload] still processing');
             return res.status(202).json({ jobId: job.id, status: 'processing' });
         }
-    } catch (err) {
-        next(err);
-    }
+    } catch (err) { next(err); }
 }
 
 /**

@@ -40,12 +40,13 @@
     "path": "^0.12.7",
     "pdf-parse": "^1.1.1",
     "pg": "^8.16.2",
-    "pino": "^9.9.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
     "nodemon": "^3.1.10",
+    "pino": "^9.9.0",
+    "pino-http": "^10.5.0",
     "supertest": "^7.1.4",
     "ts-node": "^10.9.2",
     "tsx": "^4.20.4",

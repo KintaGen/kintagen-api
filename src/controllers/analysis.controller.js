@@ -2,9 +2,8 @@
 import { Queue, QueueEvents } from 'bullmq';
 import { connection } from '../queues/connection.js';
 
-const QUEUE_NAME = 'kintagen';
-const queue = new Queue(QUEUE_NAME, { connection });
-const events = new QueueEvents(QUEUE_NAME, { connection });
+
+import { jobs as queue, queueEvents as events } from '../queues/queue.js';
 
 // --- HELPER FUNCTION ---
 async function enqueueAndMaybeWait(name, payload, { waitMs, jobId }) {
@@ -81,34 +80,35 @@ export async function nmrAnalysisHandler(req, res) {
 
 export async function getAnalysisJobHandler(req, res, next) {
   try {
-    const { id } = req.params;
-    const q = new Queue(QUEUE_NAME, { connection });
-    const job = await q.getJob(id);
-    if (!job) { 
-      return res.json({ 
-        id, 
-        state: 'completed', 
-        progress: 100, 
-        failedReason: null, 
-        returnvalue: null, 
-        logs: [], 
-        finishedOn: Date.now(), 
-      }); 
+    const jobId = req.params?.jobId || req.query?.jobId;
+    if (!jobId) {
+      return res.status(400).json({ error: 'Missing jobId' });
     }
-    const state = await job.getState();
-    res.json({ 
-      id: job.id, 
-      name: job.name, 
-      state, 
-      progress: typeof job.progress === 'number' ? job.progress : (state === 'completed' ? 100 : undefined), 
-      failedReason: job.failedReason || null, 
-      returnvalue: job.returnvalue || null, 
-      logs: [], 
-      timestamp: job.timestamp, 
-      finishedOn: job.finishedOn, 
-      processedOn: job.processedOn, 
-    });
-  } catch (e) { 
-    next(e); 
+
+    const q = new Queue('kintagen', { connection });
+    const job = await q.getJob(jobId);
+
+    if (!job) {
+      // Keep 404 rather than 200 here; tests expect real status for existing jobs.
+      return res.status(404).json({ error: 'Job not found', jobId });
+    }
+
+    const state = await job.getState(); // 'completed' | 'failed' | 'waiting' | 'active' | 'delayed' | 'paused'
+    const data = {
+      id: job.id,
+      name: job.name,
+      state,
+      progress: job.progress ?? 0,
+      attemptsMade: job.attemptsMade ?? 0,
+      timestamp: job.timestamp ?? null,
+      processedOn: job.processedOn ?? null,
+      finishedOn: job.finishedOn ?? null,
+      failedReason: job.failedReason ?? null,
+      returnvalue: job.returnvalue ?? null,
+    };
+
+    return res.status(200).json(data);
+  } catch (err) {
+    return next(err);
   }
 }
