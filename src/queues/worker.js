@@ -6,8 +6,10 @@ import { runScript } from '../services/analysis.service.js';
 import { RSCRIPT } from '../services/r-binary.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
-
+import os from 'os';
 import fs from 'fs';
+import unzipper from 'unzipper';
+
 import { query } from '../services/db.js';
 import { uploadData } from '../services/synapse.js';
 import * as aiService from '../services/ai.service.js';
@@ -118,7 +120,15 @@ async function handleUploadFile(job) {
 
         if (text) {
           await job.updateProgress(35);
-          const aiMeta = await aiService.extractMetadataFromText(text);
+
+          // Be resilient if extractMetadataFromText is not implemented.
+          let aiMeta = {};
+          try {
+            aiMeta = (await aiService?.extractMetadataFromText?.(text)) || {};
+          } catch {
+            aiMeta = {};
+          }
+
           response = {
             ...response,
             title: aiMeta.title || (originalname || 'Untitled'),
@@ -173,6 +183,112 @@ async function handleUploadFile(job) {
     cleanupTemp();
   }
 }
+
+/* -------------------------- GCMS HELPERS (NEW) -------------------------- */
+
+function filcdnUrl(cid) {
+  return `https://0xcdb8cc9323852ab3bed33f6c54a7e0c15d555353.calibration.filcdn.io/${cid}`;
+}
+
+async function downloadCidToTempFile(cid, filename = 'file.bin') {
+  const url = filcdnUrl(cid);
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Failed to fetch CID ${cid} (${r.status})`);
+  const buf = Buffer.from(await r.arrayBuffer());
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kgms-'));
+  const filePath = path.join(tmpDir, filename);
+  fs.writeFileSync(filePath, buf);
+
+  const cleanup = async () => {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+  };
+  return { tmpDir, filePath, cleanup };
+}
+
+async function unzipToTempDir(zipPath) {
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kgunzip-'));
+  await fs.createReadStream(zipPath)
+    .pipe(unzipper.Extract({ path: outDir }))
+    .promise();
+  const cleanup = async () => {
+    try { fs.rmSync(outDir, { recursive: true, force: true }); } catch { /* noop */ }
+  };
+  return { outDir, cleanup };
+}
+
+export async function handleGcmsDifferentialAnalyze(job) {
+  const { sample, dataCid } = job.data || {};
+  await job.updateProgress(5);
+
+  // If sample requested or no CID given, xcms_analysis.R will use faahKO demo
+  if (sample === true || !dataCid) {
+    const out = await runRScriptOrStub('xcms_analysis.R', [], () => ({
+      status: 'success',
+      error: null,
+      log: ['FAKE_R: gcms differential (sample)'],
+      results: { stats_table: [], pca_plot_b64: null, volcano_plot_b64: null, metabolite_map_b64: null }
+    }));
+    await job.updateProgress(100);
+    return out;
+  }
+
+  // Real data path: download the ZIP and pass its path to the R script.
+  // (The R script handles unzipping and discovering the pheno CSV inside.)
+  const dl = await downloadCidToTempFile(dataCid, 'project.zip');
+  try {
+    await job.updateProgress(20);
+    const out = await runRScriptOrStub('xcms_analysis.R', [dl.filePath], () => ({
+      status: 'success',
+      error: null,
+      log: ['FAKE_R: gcms differential (zip)'],
+      results: { stats_table: [], pca_plot_b64: null, volcano_plot_b64: null, metabolite_map_b64: null }
+    }));
+    await job.updateProgress(100);
+    return out;
+  } finally {
+    await dl.cleanup();
+  }
+}
+
+export async function handleGcmsProfilingAnalyze(job) {
+  const { sample, dataCid } = job.data || {};
+  await job.updateProgress(5);
+
+  // If sample requested or no CID given, xcms_profiling.R will use faahKO demo
+  if (sample === true || !dataCid) {
+    const out = await runRScriptOrStub('xcms_profiling.R', [], () => ({
+      status: 'success',
+      error: null,
+      log: ['FAKE_R: gcms profiling (sample)'],
+      results: { feature_table: [], bpc_plot_b64: null, top_spectra_plot_b64: null, metabolite_map_b64: null }
+    }));
+    await job.updateProgress(100);
+    return out;
+  }
+
+  // Real data: download ZIP, unzip to temp dir, pass directory to the R script
+  const dl = await downloadCidToTempFile(dataCid, 'project.zip');
+  let unz = null;
+  try {
+    await job.updateProgress(20);
+    unz = await unzipToTempDir(dl.filePath);
+    await job.updateProgress(35);
+    const out = await runRScriptOrStub('xcms_profiling.R', [unz.outDir], () => ({
+      status: 'success',
+      error: null,
+      log: ['FAKE_R: gcms profiling (unzipped dir)'],
+      results: { feature_table: [], bpc_plot_b64: null, top_spectra_plot_b64: null, metabolite_map_b64: null }
+    }));
+    await job.updateProgress(100);
+    return out;
+  } finally {
+    try { await dl.cleanup(); } catch {}
+    try { if (unz) await unz.cleanup(); } catch {}
+  }
+}
+
+/* ------------------------------ WORKER BODY ------------------------------ */
 
 export const worker = new Worker(
   'kintagen',
@@ -252,47 +368,13 @@ export const worker = new Worker(
         );
       }
 
+      // ✅ NEW: match the frontend job names and route to helpers
       case 'gcms-profiling-analyze': {
-        const { dataCid, sample } = job.data || {};
-        const dataPath = sample ? '' : dataCid;
-        log(`[gcms-profiling-analyze] Running with dataPath: "${dataPath}"`);
-
-        return runRScriptOrStub(
-          'xcms_profiling.R',
-          [dataPath ?? ''],
-          () => ({
-            status: 'success',
-            results: {
-              feature_table: [{ feature_id: 'F1', mz: 123.4567, rt: 345.67 }],
-              bpc_plot_b64: null,
-              top_spectra_plot_b64: null,
-              metabolite_map_b64: null,
-            },
-            log: ['FAKE_R: gcms PROFILING stub'],
-          }),
-        );
+        return await handleGcmsProfilingAnalyze(job);
       }
 
       case 'gcms-differential-analyze': {
-        const { dataCid, phenoCid, sample } = job.data || {};
-        const dataPath = sample ? '' : dataCid;
-        const phenoPath = sample ? '' : phenoCid;
-        log(`[gcms-differential-analyze] Running with dataPath: "${dataPath}", phenoPath: "${phenoPath}"`);
-
-        return runRScriptOrStub(
-          'xcms_analysis.R',
-          [dataPath ?? '', phenoPath ?? ''],
-          () => ({
-            status: 'success',
-            results: {
-              stats_table: [{ feature: 'm/z 123.45@5.6min', log2FC: 1.2, pvalue: 0.03 }],
-              volcano_plot_b64: null,
-              pca_plot_b64: null,
-              metabolite_map_b64: null,
-            },
-            log: ['FAKE_R: gcms DIFFERENTIAL stub'],
-          }),
-        );
+        return await handleGcmsDifferentialAnalyze(job);
       }
 
       case 'nmr-analyze': {

@@ -1,11 +1,11 @@
-// src/controllers/analysis.controller.js
-import { Queue, QueueEvents } from 'bullmq';
-import { connection } from '../queues/connection.js';
+
+
+import { getLogger } from '../services/logger.js';        // ✅ you were missing this
+
 
 
 import { jobs as queue, queueEvents as events } from '../queues/queue.js';
 
-// --- HELPER FUNCTION ---
 async function enqueueAndMaybeWait(name, payload, { waitMs, jobId }) {
     const job = await queue.add(name, payload, {
       jobId,
@@ -24,7 +24,6 @@ async function enqueueAndMaybeWait(name, payload, { waitMs, jobId }) {
     }
 }
 
-// --- HANDLERS ---
 
 export async function ld50AnalysisHandler(req, res) {
   const { async: isAsyncFlag, timeoutMs, ...payload } = req.body ?? {};
@@ -78,37 +77,77 @@ export async function nmrAnalysisHandler(req, res) {
   return res.json(out.result);
 }
 
+
 export async function getAnalysisJobHandler(req, res, next) {
+  const log = getLogger();
   try {
-    const jobId = req.params?.jobId || req.query?.jobId;
+    // prevent 304s for polling
+    res.setHeader('Cache-Control', 'no-store');
+
+    const raw =
+      req.params?.id ??
+      req.params?.jobId ??
+      req.query?.id ??
+      req.query?.jobId ?? '';
+
+    const jobId = decodeURIComponent(String(raw)).trim();
     if (!jobId) {
-      return res.status(400).json({ error: 'Missing jobId' });
+      return res.status(400).json({ jobId: null, state: 'not_found', error: 'Missing jobId' });
     }
 
-    const q = new Queue('kintagen', { connection });
-    const job = await q.getJob(jobId);
+    const job = await queue.getJob(jobId);
+    if (!job) return res.status(404).json({ id: jobId, jobId, state: 'not_found' });
 
-    if (!job) {
-      // Keep 404 rather than 200 here; tests expect real status for existing jobs.
-      return res.status(404).json({ error: 'Job not found', jobId });
-    }
+    const state = await job.getState();
 
-    const state = await job.getState(); // 'completed' | 'failed' | 'waiting' | 'active' | 'delayed' | 'paused'
-    const data = {
-      id: job.id,
+    // logs (BullMQ v5-safe)
+    let logs = [];
+    try {
+      const qLogs = await queue.getJobLogs(job.id);
+      logs = qLogs?.logs || [];
+    } catch {}
+
+    const base = {
+      id: job.id,                 // <-- include both
+      jobId: job.id,
       name: job.name,
       state,
-      progress: job.progress ?? 0,
+      progress: job.progress ?? null,
       attemptsMade: job.attemptsMade ?? 0,
-      timestamp: job.timestamp ?? null,
-      processedOn: job.processedOn ?? null,
-      finishedOn: job.finishedOn ?? null,
-      failedReason: job.failedReason ?? null,
-      returnvalue: job.returnvalue ?? null,
+      timestamp: job.timestamp,
+      processedOn: job.processedOn,
+      finishedOn: job.finishedOn,
+      logs,
     };
 
-    return res.status(200).json(data);
+    const rv = job.returnvalue ?? null;
+    const reply =
+      typeof rv === 'string'
+        ? rv
+        : (rv && typeof rv === 'object' && (rv.reply || rv.message || rv.text)) || null;
+
+    if (state === 'completed') {
+      return res.json({
+        ...base,
+        returnvalue: rv,  // <-- legacy key most UIs use
+        result: rv,       // <-- your newer key
+        reply,            // <-- convenient flat field
+      });
+    }
+
+    if (state === 'failed') {
+      return res.json({
+        ...base,
+        failedReason: job.failedReason ?? null,
+        returnvalue: rv,
+        result: rv,
+        reply,
+      });
+    }
+
+    // waiting | active | delayed | paused
+    return res.json(base);
   } catch (err) {
-    return next(err);
+    next(err);
   }
 }
