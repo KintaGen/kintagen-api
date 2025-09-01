@@ -38,7 +38,6 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(patchwork)
 })
-setwd("~/projects/kintagen/server/")
 is_arg_missing <- function(arg) {
   return(is.na(arg) || arg == "undefined" || arg == "null" || arg == "")
 }

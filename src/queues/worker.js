@@ -37,8 +37,22 @@ async function runRScriptOrStub(scriptRelPath, args, stubFactory) {
     log('FAKE_R stub for', scriptRelPath);
     return stubFactory();
   }
-  const scriptPath = path.join(__dirname, '..', 'scripts', scriptRelPath);
+
+  // --- MODIFIED SECTION ---
+  // Determine if we're running in Docker based on the RSCRIPT variable
+  const isDocker = (process.env.RSCRIPT || '').includes('docker');
+  
+  // If using Docker, the path must be the one *inside* the container.
+  // Otherwise, construct the local path for local Rscript execution.
+  const scriptPath = isDocker
+    ? `/server/src/scripts/${scriptRelPath}` 
+    : path.join(__dirname, '..', 'scripts', scriptRelPath);
+  
+  console.log(`Using script path: ${scriptPath}`);
+
+  // This call now works perfectly because runScript can handle the complex command string.
   const out = await runScript(RSCRIPT, [scriptPath, ...args]);
+  // --- END MODIFIED SECTION ---
 
   try {
     return JSON.parse(out);

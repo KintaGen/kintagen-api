@@ -25,6 +25,13 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-
+  r-engine:
+    # Build using the Dockerfile in the current directory (which is now 'server')
+    build: .
+    container_name: kintagen-r-engine
+    # Keep the container running in the background
+    command: tail -f /dev/null
+    volumes:
+      - .:/server
 volumes:
   pgdata:

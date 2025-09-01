@@ -12,7 +12,6 @@
 # ============================================================================
 # 1. SETUP & INITIALIZATION
 # ============================================================================
-setwd("~/projects/kintagen/server/")
 # Suppress startup messages for a cleaner API output
 suppressPackageStartupMessages({
   if (!requireNamespace("drc", quietly = TRUE)) install.packages("drc", repos = "https://cloud.r-project.org")
